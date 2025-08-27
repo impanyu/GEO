@@ -1,0 +1,1169 @@
+'use client'
+
+import { useEffect, useState, useRef } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { useSession, signOut } from 'next-auth/react'
+import { Globe, LogOut, User, ArrowRight, Home, ChevronDown, Check, HelpCircle, Search, Target, ExternalLink, Loader2 } from 'lucide-react'
+import { useNavigation } from '@/contexts/NavigationContext'
+import SideNavigation from '@/components/SideNavigation'
+import LoadingSpinner from '@/components/LoadingSpinner'
+
+// Simple component to display captured HTML directly without iframe complications
+function SimpleWebsiteRenderer({ websitePath }: { websitePath: string }) {
+  const [htmlContent, setHtmlContent] = useState<string>('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string>('')
+
+  useEffect(() => {
+    console.log('📄 SimpleWebsiteRenderer: Fetching content for', websitePath)
+    
+    fetch(`/api/serve-website/${websitePath}/index.html`)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+        }
+        return response.text()
+      })
+      .then(html => {
+        console.log('📄 SimpleWebsiteRenderer: Got HTML content, length:', html.length)
+        
+        // Keep the ENTIRE HTML with minimal changes for safety
+        let cleanContent = html
+          // Fix ALL relative URLs to point to our API
+          .replace(/src="\/api\/serve-website\/([^"]*\/)?([^"\/]+)"/g, `src="/api/serve-website/${websitePath}/$2"`)
+          .replace(/href="\/api\/serve-website\/([^"]*\/)?([^"\/]+)"/g, `href="/api/serve-website/${websitePath}/$2"`)
+          // Also fix any remaining relative paths
+          .replace(/src="(?!http|data:|\/api\/serve-website)([^"]+)"/g, `src="/api/serve-website/${websitePath}/$1"`)
+          .replace(/href="(?!http|javascript:|mailto:|#|\/api\/serve-website)([^"]+)"/g, `href="/api/serve-website/${websitePath}/$1"`)
+          // Only remove the most problematic scripts (keep CSS and most JS)
+          .replace(/<script[^>]*src[^>]*(?:adsbygoogle|googlesyndication|google-analytics|googletagmanager)[^>]*><\/script>/gi, '<!-- removed ad script -->')
+          // Remove only the most dangerous inline scripts
+          .replace(/<script[^>]*>[\s\S]*?(?:XMLHttpRequest.*gw\.m\.163\.com|fetch.*gw\.m\.163\.com)[\s\S]*?<\/script>/gi, '<!-- removed external request script -->')
+        
+        // Add minimal containment CSS that doesn't interfere with original styling
+        const browserContainmentCSS = `
+          <style>
+            /* Minimal containment - just prevent elements from escaping iframe */
+            html {
+              overflow-x: auto !important;
+              overflow-y: auto !important;
+            }
+            
+            /* Only fix truly problematic positioning */
+            *[style*="position: fixed"] {
+              position: absolute !important;
+            }
+            
+            /* Ensure no infinite scrollbars */
+            body {
+              max-width: 100vw;
+              overflow-wrap: break-word;
+            }
+          </style>
+        `
+        
+        // Insert the containment CSS into the <head> section
+        if (cleanContent.includes('<head>')) {
+          cleanContent = cleanContent.replace('<head>', '<head>' + browserContainmentCSS)
+        } else {
+          cleanContent = browserContainmentCSS + cleanContent
+        }
+          
+        setHtmlContent(cleanContent)
+        setLoading(false)
+        console.log('📄 SimpleWebsiteRenderer: Content cleaned and ready to display')
+      })
+      .catch(err => {
+        console.error('📄 SimpleWebsiteRenderer: Error fetching content:', err)
+        setError(err.message)
+        setLoading(false)
+      })
+  }, [websitePath])
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center">
+          <Loader2 className="animate-spin h-8 w-8 mx-auto mb-4" />
+          <p className="text-gray-500">Loading website content...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center max-w-md">
+          <div className="bg-red-50 border border-red-200 rounded-xl p-6">
+            <h3 className="text-lg font-semibold text-red-800 mb-2">Failed to Load Content</h3>
+            <p className="text-red-600 text-sm">{error}</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center justify-center h-full">
+      {/* Browser window frame */}
+      <div 
+        className="bg-white rounded-lg shadow-lg overflow-hidden"
+        style={{ 
+          width: '1600px',
+          height: '800px',
+          maxWidth: '100%',
+          maxHeight: '100%',
+          border: '1px solid #e5e7eb'
+        }}
+      >
+        {/* Browser window header */}
+        <div className="bg-gray-100 border-b border-gray-200 px-4 py-2 flex items-center space-x-2">
+          <div className="flex space-x-1">
+            <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+            <div className="w-3 h-3 bg-yellow-500 rounded-full"></div>
+            <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+          </div>
+          <div className="flex-1 mx-4">
+            <div className="bg-white border border-gray-300 rounded px-3 py-1 text-sm text-gray-600 truncate">
+              {websitePath.replace(/_/g, '.').replace(/\.\w+$/, '')}
+            </div>
+          </div>
+        </div>
+        
+        {/* Browser content area */}
+        <div 
+          className="w-full bg-white"
+          style={{
+            height: 'calc(100% - 40px)', // Account for header height
+            overflow: 'hidden',
+            position: 'relative'
+          }}
+        >
+          <iframe
+            srcDoc={htmlContent}
+            className="w-full h-full border-0"
+            style={{
+              width: '100%',
+              height: '100%',
+              border: 'none',
+              background: 'white'
+            }}
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            title="Website Preview"
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function OptimizeContent() {
+  const { data: session, status } = useSession()
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const { isCollapsed } = useNavigation()
+  const [url, setUrl] = useState('')
+  const [optimizationQuery, setOptimizationQuery] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+  const [crawledContent, setCrawledContent] = useState<string>('')
+  const [pageTitle, setPageTitle] = useState<string>('')
+  const [isCrawling, setIsCrawling] = useState(false)
+  const [crawlError, setCrawlError] = useState<string>('')
+  const [websitePath, setWebsitePath] = useState<string>('')
+  const [isFetching, setIsFetching] = useState(false)
+  
+  // Optimization categories state
+  const [pageContent, setPageContent] = useState(true)
+  const [seo, setSeo] = useState(true)
+  const [isSeoDropdownOpen, setIsSeoDropdownOpen] = useState(false)
+  const [offPagePromotion, setOffPagePromotion] = useState(true)
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false)
+  const [visibilityScore, setVisibilityScore] = useState(75) // Mock score for now
+  const [showSeoInfo, setShowSeoInfo] = useState(false)
+  const [showOffPageInfo, setShowOffPageInfo] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+  const seoInfoRef = useRef<HTMLDivElement>(null)
+  const offPageInfoRef = useRef<HTMLDivElement>(null)
+  const seoDropdownRef = useRef<HTMLDivElement>(null)
+  
+  // Search engines for SEO
+  const [searchEngines, setSearchEngines] = useState({
+    google: true,
+    bing: true,
+    yahoo: true,
+    duckduckgo: true,
+    baidu: true
+  })
+
+  // Search engine weight values (0-1)
+  const [searchEngineWeights, setSearchEngineWeights] = useState({
+    google: 0.9,
+    bing: 0.7,
+    yahoo: 0.6,
+    duckduckgo: 0.5,
+    baidu: 0.4
+  })
+  
+  // Off-page promotion platforms
+  const [promotionPlatforms, setPromotionPlatforms] = useState({
+    wiki: true,
+    g2: true,
+    reddit: true,
+    youtube: true,
+    linkedin: true,
+    forbes: true,
+    quora: true,
+    instagram: true,
+    tiktok: true,
+    x: true
+  })
+
+  // Platform weight values (0-1)
+  const [platformWeights, setPlatformWeights] = useState({
+    wiki: 0.8,
+    g2: 0.7,
+    reddit: 0.9,
+    youtube: 0.8,
+    linkedin: 0.6,
+    forbes: 0.7,
+    quora: 0.5,
+    instagram: 0.6,
+    tiktok: 0.4,
+    x: 0.8
+  })
+
+  // Helper functions
+  const togglePlatform = (platform: string) => {
+    setPromotionPlatforms(prev => ({
+      ...prev,
+      [platform]: !prev[platform as keyof typeof prev]
+    }))
+  }
+
+  const formatPlatformName = (platform: string) => {
+    return platform.split('_').map(word => 
+      word.charAt(0).toUpperCase() + word.slice(1)
+    ).join(' ')
+  }
+
+  const getSelectedPlatformsCount = () => {
+    return Object.values(promotionPlatforms).filter(Boolean).length
+  }
+
+  const handleOffPagePromotionToggle = (checked: boolean) => {
+    setOffPagePromotion(checked)
+    // Check/uncheck all platforms when main checkbox is toggled
+    const updatedPlatforms = Object.keys(promotionPlatforms).reduce((acc, platform) => {
+      acc[platform as keyof typeof promotionPlatforms] = checked
+      return acc
+    }, {} as typeof promotionPlatforms)
+    setPromotionPlatforms(updatedPlatforms)
+  }
+
+  const updatePlatformWeight = (platform: string, weight: number) => {
+    setPlatformWeights(prev => ({
+      ...prev,
+      [platform]: Math.max(0, Math.min(1, weight)) // Clamp between 0 and 1
+    }))
+  }
+
+  const toggleSearchEngine = (engine: string) => {
+    setSearchEngines(prev => ({
+      ...prev,
+      [engine]: !prev[engine as keyof typeof prev]
+    }))
+  }
+
+  const updateSearchEngineWeight = (engine: string, weight: number) => {
+    setSearchEngineWeights(prev => ({
+      ...prev,
+      [engine]: Math.max(0, Math.min(1, weight)) // Clamp between 0 and 1
+    }))
+  }
+
+  const getSelectedSearchEnginesCount = () => {
+    return Object.values(searchEngines).filter(Boolean).length
+  }
+
+  const handleSeoToggle = (checked: boolean) => {
+    setSeo(checked)
+    // Check/uncheck all search engines when main checkbox is toggled
+    const updatedEngines = Object.keys(searchEngines).reduce((acc, engine) => {
+      acc[engine as keyof typeof searchEngines] = checked
+      return acc
+    }, {} as typeof searchEngines)
+    setSearchEngines(updatedEngines)
+  }
+
+  const getSearchEngineIcon = (engine: string) => {
+    const iconClass = "w-4 h-4 flex items-center justify-center text-white text-xs font-bold"
+    
+    switch (engine) {
+      case 'google':
+        return (
+          <div className={`${iconClass} bg-blue-500 rounded`} title="Google">
+            <span>G</span>
+          </div>
+        )
+      case 'bing':
+        return (
+          <div className={`${iconClass} bg-green-600 rounded`} title="Bing">
+            <span>B</span>
+          </div>
+        )
+      case 'yahoo':
+        return (
+          <div className={`${iconClass} bg-purple-600 rounded`} title="Yahoo">
+            <span>Y</span>
+          </div>
+        )
+      case 'duckduckgo':
+        return (
+          <div className={`${iconClass} bg-orange-500 rounded`} title="DuckDuckGo">
+            <span>D</span>
+          </div>
+        )
+      case 'baidu':
+        return (
+          <div className={`${iconClass} bg-red-600 rounded`} title="Baidu">
+            <span>百</span>
+          </div>
+        )
+      default:
+        return <div className={`${iconClass} bg-gray-400 rounded`}>?</div>
+    }
+  }
+
+  const getPlatformIcon = (platform: string) => {
+    const iconClass = "w-4 h-4 flex items-center justify-center text-white text-xs font-bold"
+    
+    switch (platform) {
+      case 'wiki':
+        return (
+          <div className={`${iconClass} bg-black rounded`} title="Wikipedia">
+            <span className="text-white">W</span>
+          </div>
+        )
+      case 'g2':
+        return (
+          <div className={`${iconClass} bg-orange-500 rounded`} title="G2">
+            <span>G2</span>
+          </div>
+        )
+      case 'reddit':
+        return (
+          <div className={`${iconClass} bg-orange-500 rounded-full`} title="Reddit">
+            <span>r</span>
+          </div>
+        )
+      case 'youtube':
+        return (
+          <div className={`${iconClass} bg-red-600 rounded`} title="YouTube">
+            <span>▶</span>
+          </div>
+        )
+      case 'linkedin':
+        return (
+          <div className={`${iconClass} bg-blue-700 rounded`} title="LinkedIn">
+            <span>in</span>
+          </div>
+        )
+      case 'forbes':
+        return (
+          <div className={`${iconClass} bg-blue-900 rounded`} title="Forbes">
+            <span>F</span>
+          </div>
+        )
+      case 'quora':
+        return (
+          <div className={`${iconClass} bg-red-600 rounded`} title="Quora">
+            <span>Q</span>
+          </div>
+        )
+      case 'instagram':
+        return (
+          <div className={`${iconClass} bg-gradient-to-br from-purple-500 via-pink-500 to-orange-400 rounded-lg`} title="Instagram">
+            <span>📷</span>
+          </div>
+        )
+      case 'tiktok':
+        return (
+          <div className={`${iconClass} bg-black rounded`} title="TikTok">
+            <span>🎵</span>
+          </div>
+        )
+      case 'x':
+        return (
+          <div className={`${iconClass} bg-black rounded`} title="X (formerly Twitter)">
+            <span className="text-white font-bold">𝕏</span>
+          </div>
+        )
+      default:
+        return <div className={`${iconClass} bg-gray-400 rounded`}>?</div>
+    }
+  }
+
+  useEffect(() => {
+    if (status === 'unauthenticated') {
+      router.push('/auth/signin')
+      return
+    }
+
+    const urlParam = searchParams?.get('url')
+    if (urlParam) {
+      const decodedUrl = decodeURIComponent(urlParam)
+      setUrl(decodedUrl)
+      fetchWebsite(decodedUrl)
+    }
+    // Allow access to optimize page even without URL parameter
+  }, [status, searchParams, router])
+
+  // Handle clicks outside dropdown to close it
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      // Check if click is outside both the trigger container and the expandable row itself
+      const target = event.target as Node
+      
+      // For off-page promotion
+      if (isDropdownOpen) {
+        const isOutsideTrigger = dropdownRef.current && !dropdownRef.current.contains(target)
+        const isOutsideExpandableRow = !(target as Element).closest('.expandable-offpage-row')
+        
+        if (isOutsideTrigger && isOutsideExpandableRow) {
+          setIsDropdownOpen(false)
+        }
+      }
+      
+      // For SEO
+      if (isSeoDropdownOpen) {
+        const isOutsideTrigger = seoDropdownRef.current && !seoDropdownRef.current.contains(target)
+        const isOutsideExpandableRow = !(target as Element).closest('.expandable-seo-row')
+        
+        if (isOutsideTrigger && isOutsideExpandableRow) {
+          setIsSeoDropdownOpen(false)
+        }
+      }
+    }
+
+    if (isDropdownOpen || isSeoDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [isDropdownOpen, isSeoDropdownOpen])
+
+  // Handle clicks outside info tooltips
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (seoInfoRef.current && !seoInfoRef.current.contains(event.target as Node)) {
+        setShowSeoInfo(false)
+      }
+      if (offPageInfoRef.current && !offPageInfoRef.current.contains(event.target as Node)) {
+        setShowOffPageInfo(false)
+      }
+    }
+
+    if (showSeoInfo || showOffPageInfo) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [showSeoInfo, showOffPageInfo])
+
+  // Debug websitePath changes
+  useEffect(() => {
+    console.log('🎯 websitePath changed to:', websitePath)
+    if (websitePath) {
+      console.log('📄 iframe should show:', `/api/serve-website/${websitePath}/index.html`)
+    } else {
+      console.log('❌ websitePath is empty/null')
+    }
+  }, [websitePath])
+
+  // Add monitoring for all critical state changes
+  useEffect(() => {
+    const stateMonitor = setInterval(() => {
+      console.log('🔍 State check:', {
+        websitePath,
+        url,
+        isCrawling,
+        isFetching,
+        crawlError,
+        timestamp: new Date().toISOString()
+      })
+    }, 2000)
+
+    return () => clearInterval(stateMonitor)
+  }, [websitePath, url, isCrawling, isFetching, crawlError])
+
+  const fetchWebsite = async (targetUrl: string, forceRefresh = false) => {
+    console.log('🔄 fetchWebsite started for:', targetUrl, 'forceRefresh:', forceRefresh)
+    setIsFetching(true)
+    setIsCrawling(true)
+    setCrawlError('')
+    
+    try {
+      console.log('📡 Making API call to fetch-website...')
+      // First, fetch and store the website locally
+      const fetchResponse = await fetch('/api/fetch-website', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'same-origin', // Ensure cookies/session are included
+        body: JSON.stringify({ 
+          url: targetUrl,
+          forceRefresh: forceRefresh // Add force refresh parameter
+        }),
+      })
+
+      const fetchData = await fetchResponse.json()
+      console.log('📥 API response received:', fetchData)
+
+      if (!fetchResponse.ok) {
+        console.error('❌ Fetch website error:', fetchData)
+        setCrawlError(fetchData.error || 'Failed to fetch website')
+        setIsFetching(false)
+        setIsCrawling(false)
+        return
+      }
+
+      console.log('✅ Setting websitePath to:', fetchData.path)
+      setWebsitePath(fetchData.path)
+      setPageTitle(fetchData.title || targetUrl) // Use title from fetch-website response
+      console.log('🎯 fetchWebsite completed successfully')
+      
+      // Check if websitePath is still set after a delay (to catch unexpected clearing)
+      setTimeout(() => {
+        console.log('⏰ websitePath after 2 seconds:', fetchData.path)
+      }, 2000)
+      
+      setTimeout(() => {
+        console.log('⏰ websitePath after 5 seconds:', fetchData.path)
+      }, 5000)
+      
+    } catch (error) {
+      console.error('💥 Fetch error:', error)
+      setCrawlError('Network error occurred while fetching website')
+    } finally {
+      console.log('🏁 fetchWebsite finally block - setting states to false')
+      setIsFetching(false)
+      setIsCrawling(false)
+    }
+  }
+
+  const handleOptimizationSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!optimizationQuery.trim()) return
+
+    setIsLoading(true)
+    
+    // TODO: Implement optimization logic here
+    // This would typically send the query and URL to your AI optimization service
+    console.log('Optimization query:', optimizationQuery, 'for URL:', url)
+    
+    // Simulate processing time
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    
+    setIsLoading(false)
+    setOptimizationQuery('')
+    alert('Optimization request processed!')
+  }
+
+  const handleUrlSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!url.trim()) return
+
+    setCrawlError('')
+    
+    try {
+      // 1. Validate URL format and reachability first
+      const response = await fetch('/api/validate-url', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url: url.trim() }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        setCrawlError(data.message)
+        return
+      }
+
+      if (data.success) {
+        // 2. URL is valid, now fetch and render the page in place
+        fetchWebsite(url.trim())
+      }
+    } catch (error) {
+      console.error('Error validating URL:', error)
+      setCrawlError('An error occurred while validating the URL. Please try again.')
+    }
+  }
+
+  if (status === 'loading') {
+    return <LoadingSpinner />
+  }
+
+  if (status === 'unauthenticated') {
+    return null // Will redirect to signin
+  }
+
+  // Allow access to optimize page even without URL parameter
+
+  return (
+    <div className="min-h-screen bg-white flex">
+      <SideNavigation />
+      <div className={`flex-1 transition-all duration-300 flex flex-col ${isCollapsed ? 'ml-16' : 'ml-64'}`}>
+      {/* Header */}
+      <header className="bg-white/80 backdrop-blur-sm border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center h-16">
+            <div className="flex items-center space-x-3">
+              <button
+                onClick={() => router.push('/')}
+                className="flex items-center space-x-2 hover:opacity-80 transition-opacity"
+              >
+                <Globe className="h-8 w-8 text-blue-600" />
+                <span className="text-xl font-bold text-gray-900">Springbrand.ai</span>
+              </button>
+            </div>
+            
+            <div className="flex items-center space-x-4">
+              <button
+                onClick={() => router.push('/')}
+                className="flex items-center space-x-1 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 transition-colors"
+              >
+                <Home className="h-4 w-4" />
+                <span>Home</span>
+              </button>
+              <div className="flex items-center space-x-2">
+                <User className="h-5 w-5 text-gray-600" />
+                <span className="text-sm text-gray-700">{session?.user?.name}</span>
+              </div>
+              <button
+                onClick={() => signOut()}
+                className="flex items-center space-x-1 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 transition-colors"
+              >
+                <LogOut className="h-4 w-4" />
+                <span>Sign out</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="flex-1 flex flex-col">
+        {/* URL Display and Optimization Controls */}
+        <div className="relative">
+          <div className="bg-white/90 backdrop-blur-sm border-b border-gray-200 px-4 py-4 relative overflow-visible z-50">
+            <div className="max-w-7xl mx-auto">
+              {/* First Row - URL Display */}
+              <div className="mb-4">
+                {websitePath && (
+                  <div className="flex items-center space-x-2 text-sm text-gray-600">
+                    <span>Optimizing:</span>
+                    <span className="font-medium text-gray-900 truncate max-w-xs">{url}</span>
+                    <div className="ml-2 flex space-x-2 text-xs">
+                      <a
+                        href={`/api/serve-website/${websitePath}/index.html`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:text-blue-800 underline"
+                      >
+                        [Debug: Open in new tab]
+                      </a>
+                      <button
+                        onClick={() => {
+                          console.log('🔄 Force refreshing iframe...')
+                          const iframe = document.querySelector('iframe[title="Website Preview"]') as HTMLIFrameElement
+                          if (iframe) {
+                            const currentSrc = iframe.src
+                            iframe.src = ''
+                            setTimeout(() => {
+                              iframe.src = currentSrc + (currentSrc.includes('?') ? '&' : '?') + 'forced=' + Date.now()
+                            }, 100)
+                          }
+                        }}
+                        className="text-green-600 hover:text-green-800 underline bg-none border-none cursor-pointer"
+                      >
+                        [Force Refresh iframe]
+                      </button>
+                      <button
+                        onClick={() => fetchWebsite(url, true)}
+                        className="text-red-600 hover:text-red-800 underline bg-none border-none cursor-pointer"
+                      >
+                        [Force Re-fetch]
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {crawlError && (
+                  <div className="mt-2 text-red-600 text-sm">{crawlError}</div>
+                )}
+              </div>
+
+              {/* Second Row - Optimization Controls */}
+              <div className="flex items-center justify-between flex-wrap gap-4">
+                {/* Left side - Controls */}
+                <div className="flex items-center space-x-6 flex-wrap gap-y-2">
+                  {/* Optimization Checkboxes */}
+                  <div className="flex items-center space-x-6">
+                    {/* Page Content */}
+                    <div className="flex items-center space-x-2">
+                      <div className="relative cursor-pointer" onClick={() => setPageContent(!pageContent)}>
+                        <input
+                          type="checkbox"
+                          checked={pageContent}
+                          onChange={(e) => setPageContent(e.target.checked)}
+                          className="sr-only"
+                        />
+                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+                          pageContent ? 'bg-blue-600 border-blue-600' : 'border-gray-300'
+                        }`}>
+                          {pageContent && <Check className="w-3 h-3 text-white" />}
+                        </div>
+                      </div>
+                      <span className="text-sm font-medium text-gray-700">Page Content</span>
+                    </div>
+
+                    {/* SEO with Expandable Row */}
+                    <div ref={seoDropdownRef} className="relative">
+                      <div className="flex items-center space-x-2">
+                        <div className="relative cursor-pointer" onClick={(e) => {
+                          e.stopPropagation()
+                          handleSeoToggle(!seo)
+                        }}>
+                          <input
+                            type="checkbox"
+                            checked={seo}
+                            onChange={(e) => handleSeoToggle(e.target.checked)}
+                            className="sr-only"
+                          />
+                          <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+                            seo ? 'bg-blue-600 border-blue-600' : 'border-gray-300'
+                          }`}>
+                            {seo && <Check className="w-3 h-3 text-white" />}
+                          </div>
+                        </div>
+                        <span 
+                          className="text-sm font-medium text-gray-700 cursor-pointer" 
+                          onClick={() => {
+                            setIsSeoDropdownOpen(!isSeoDropdownOpen)
+                            setIsDropdownOpen(false) // Close off-page promotion when opening SEO
+                          }}
+                        >
+                          SEO ({getSelectedSearchEnginesCount()})
+                        </span>
+                        
+                        {/* SEO Info Icon */}
+                        <div ref={seoInfoRef} className="relative">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setShowSeoInfo(!showSeoInfo)
+                              setShowOffPageInfo(false) // Close other tooltip
+                            }}
+                            className="text-gray-400 hover:text-gray-600 transition-colors"
+                          >
+                            <HelpCircle className="w-4 h-4" />
+                          </button>
+                          
+                          {/* SEO Info Tooltip */}
+                          {showSeoInfo && (
+                            <div className="absolute top-full left-1/2 transform -translate-x-1/2 mt-2 w-64 bg-gray-800 text-white text-xs rounded-lg p-3 shadow-lg z-50">
+                              <div className="relative">
+                                {/* Arrow */}
+                                <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-b-4 border-transparent border-b-gray-800"></div>
+                                SEO shows the optimal effort of SEO you should put on your site, measured by the visibility score of your site on major search engines.
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        
+                        <ChevronDown 
+                          className={`w-4 h-4 text-gray-500 transition-transform cursor-pointer ${isSeoDropdownOpen ? 'rotate-180' : ''}`}
+                          onClick={() => {
+                            setIsSeoDropdownOpen(!isSeoDropdownOpen)
+                            setIsDropdownOpen(false) // Close off-page promotion when opening SEO
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Off-page Promotion with Expandable Row */}
+                    <div ref={dropdownRef} className="relative">
+                      <div className="flex items-center space-x-2">
+                        <div className="relative cursor-pointer" onClick={(e) => {
+                          e.stopPropagation()
+                          handleOffPagePromotionToggle(!offPagePromotion)
+                        }}>
+                          <input
+                            type="checkbox"
+                            checked={offPagePromotion}
+                            onChange={(e) => handleOffPagePromotionToggle(e.target.checked)}
+                            className="sr-only"
+                          />
+                          <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+                            offPagePromotion ? 'bg-blue-600 border-blue-600' : 'border-gray-300'
+                          }`}>
+                            {offPagePromotion && <Check className="w-3 h-3 text-white" />}
+                          </div>
+                        </div>
+                        <span 
+                          className="text-sm font-medium text-gray-700 cursor-pointer" 
+                          onClick={() => {
+                            setIsDropdownOpen(!isDropdownOpen)
+                            setIsSeoDropdownOpen(false) // Close SEO when opening off-page promotion
+                          }}
+                        >
+                          Off-page Promotion ({getSelectedPlatformsCount()})
+                        </span>
+                        
+                        {/* Off-page Info Icon */}
+                        <div ref={offPageInfoRef} className="relative">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setShowOffPageInfo(!showOffPageInfo)
+                              setShowSeoInfo(false) // Close other tooltip
+                            }}
+                            className="text-gray-400 hover:text-gray-600 transition-colors"
+                          >
+                            <HelpCircle className="w-4 h-4" />
+                          </button>
+                          
+                          {/* Off-page Info Tooltip */}
+                          {showOffPageInfo && (
+                            <div className="absolute top-full left-1/2 transform -translate-x-1/2 mt-2 w-64 bg-gray-800 text-white text-xs rounded-lg p-3 shadow-lg z-50">
+                              <div className="relative">
+                                {/* Arrow */}
+                                <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-b-4 border-transparent border-b-gray-800"></div>
+                                Off-page promotion shows the optimal effort of Off-page content publication you should devote, measured by the visibility score of your brand on major websites.
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        
+                        <ChevronDown 
+                          className={`w-4 h-4 text-gray-500 transition-transform cursor-pointer ${isDropdownOpen ? 'rotate-180' : ''}`}
+                          onClick={() => {
+                            setIsDropdownOpen(!isDropdownOpen)
+                            setIsSeoDropdownOpen(false) // Close SEO when opening off-page promotion
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                              {/* Right side - Recalculate Button and Visibility Score */}
+              <div className="flex items-center space-x-4">
+                <button
+                  onClick={() => {
+                    // Simulate recalculation based on selected platforms and their weights
+                    const selectedPlatforms = Object.entries(promotionPlatforms).filter(([_, checked]) => checked)
+                    const totalWeight = selectedPlatforms.reduce((sum, [platform]) => {
+                      return sum + (platformWeights[platform as keyof typeof platformWeights] || 0)
+                    }, 0)
+                    
+                    // Calculate score based on platform selection and weights (mock calculation)
+                    const baseScore = Math.min(95, Math.max(30, Math.floor((totalWeight / selectedPlatforms.length) * 100)))
+                    const randomVariation = Math.floor(Math.random() * 10) - 5 // ±5 points variation
+                    const newScore = Math.min(100, Math.max(0, baseScore + randomVariation))
+                    
+                    setVisibilityScore(newScore)
+                  }}
+                  className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-all duration-200 font-medium"
+                >
+                  Recalculate
+                </button>
+                
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm text-gray-600">Visibility Score:</span>
+                  <div className="flex items-center space-x-2">
+                    <div className="w-16 h-2 bg-gray-200 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-gradient-to-r from-red-500 via-yellow-500 to-green-500 transition-all duration-300"
+                        style={{ width: `${visibilityScore}%` }}
+                      ></div>
+                    </div>
+                    <span className={`text-sm font-semibold ${
+                      visibilityScore >= 80 ? 'text-green-600' : 
+                      visibilityScore >= 60 ? 'text-yellow-600' : 'text-red-600'
+                    }`}>
+                      {visibilityScore}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Expandable SEO Row */}
+          {isSeoDropdownOpen && (
+            <div className="expandable-seo-row bg-white/80 backdrop-blur-sm border-b border-gray-200 px-4 py-4 z-40">
+              <div className="max-w-7xl mx-auto">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                  {Object.entries(searchEngines).map(([engine, checked]) => (
+                    <div 
+                      key={engine} 
+                      className="flex items-center space-x-2 bg-white/60 rounded-lg px-3 py-2 border border-gray-200 w-full min-w-0"
+                    >
+                      <div className="flex flex-col space-y-2 w-full">
+                        <label className="flex items-center space-x-2 cursor-pointer">
+                          <div className="relative flex-shrink-0">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleSearchEngine(engine)}
+                              className="sr-only"
+                            />
+                            <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all ${
+                              checked ? 'bg-blue-600 border-blue-600' : 'border-gray-300'
+                            }`}>
+                              {checked && <Check className="w-2.5 h-2.5 text-white" />}
+                            </div>
+                          </div>
+                          
+                          {/* Search Engine Icon */}
+                          <div className="flex items-center flex-shrink-0">
+                            {getSearchEngineIcon(engine)}
+                          </div>
+                          
+                          <span className="text-sm text-gray-700 font-medium truncate">{formatPlatformName(engine)}</span>
+                        </label>
+                        
+                        {/* Weight Input */}
+                        <div className="flex items-center justify-center">
+                          <input
+                            type="number"
+                            min="0"
+                            max="1"
+                            step="0.1"
+                            value={searchEngineWeights[engine as keyof typeof searchEngineWeights]}
+                            onChange={(e) => updateSearchEngineWeight(engine, parseFloat(e.target.value) || 0)}
+                            className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 text-center"
+                            disabled={!checked}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Expandable Off-page Promotion Row */}
+          {isDropdownOpen && (
+            <div className="expandable-offpage-row bg-white/80 backdrop-blur-sm border-b border-gray-200 px-4 py-4 z-40">
+              <div className="max-w-7xl mx-auto">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                  {Object.entries(promotionPlatforms).map(([platform, checked]) => (
+                    <div 
+                      key={platform} 
+                      className="flex items-center space-x-2 bg-white/60 rounded-lg px-3 py-2 border border-gray-200 w-full min-w-0"
+                    >
+                      <div className="flex flex-col space-y-2 w-full">
+                        <label className="flex items-center space-x-2 cursor-pointer">
+                          <div className="relative flex-shrink-0">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => togglePlatform(platform)}
+                              className="sr-only"
+                            />
+                            <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all ${
+                              checked ? 'bg-blue-600 border-blue-600' : 'border-gray-300'
+                            }`}>
+                              {checked && <Check className="w-2.5 h-2.5 text-white" />}
+                            </div>
+                          </div>
+                          
+                          {/* Platform Icon */}
+                          <div className="flex items-center flex-shrink-0">
+                            {getPlatformIcon(platform)}
+                          </div>
+                          
+                          <span className="text-sm text-gray-700 font-medium truncate">{formatPlatformName(platform)}</span>
+                        </label>
+                        
+                        {/* Weight Input */}
+                        <div className="flex items-center justify-center">
+                          <input
+                            type="number"
+                            min="0"
+                            max="1"
+                            step="0.1"
+                            value={platformWeights[platform as keyof typeof platformWeights]}
+                            onChange={(e) => updatePlatformWeight(platform, parseFloat(e.target.value) || 0)}
+                            className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 text-center"
+                            disabled={!checked}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+        
+        {/* End of URL Display and Optimization Controls relative container */}
+        </div>
+
+        {/* Page Content Container */}
+        <div className="flex-1 relative z-10">
+          <div className="w-full h-full">
+            <div className="bg-white h-full flex flex-col overflow-hidden">
+              <div className="flex-1 min-h-0 overflow-hidden">
+                {isCrawling ? (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="text-center">
+                      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                      <p className="text-gray-600">
+                        {isFetching ? 'Launching browser and rendering website...' : 'Processing page content...'}
+                      </p>
+                      <p className="text-sm text-gray-500 mt-2">
+                        {isFetching ? 'Executing JavaScript, downloading resources, and capturing final render' : 'This may take a few moments'}
+                      </p>
+                    </div>
+                  </div>
+                ) : crawlError ? (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="text-center max-w-md">
+                      <div className="bg-red-50 border border-red-200 rounded-xl p-6">
+                        <h3 className="text-lg font-semibold text-red-800 mb-2">Failed to Load Page</h3>
+                        <p className="text-red-600 text-sm mb-4">{crawlError}</p>
+                        <div className="flex space-x-3">
+                          <button
+                            onClick={() => fetchWebsite(url)}
+                            className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors"
+                          >
+                            Try Again
+                          </button>
+                          <button
+                            onClick={() => fetchWebsite(url, true)}
+                            className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                          >
+                            Force Refresh
+                          </button>
+                          <button
+                            onClick={() => {
+                              console.log('🗑️ EMERGENCY: Clearing all caches and force refreshing...')
+                              fetchWebsite(url, true)
+                            }}
+                            className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors ml-2"
+                          >
+                            🗑️ Emergency Re-fetch
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : websitePath ? (
+                  <SimpleWebsiteRenderer websitePath={websitePath} />
+                ) : (
+                  <div className="w-full h-full bg-white flex items-center justify-center">
+                    <div className="text-center max-w-2xl px-6">
+                      <div className="mb-8">
+                        <h1 className="text-4xl font-bold text-gray-900 mb-4">
+                          <span className="bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+                            GEO
+                          </span>
+                          {' '}Optimization
+                        </h1>
+                        <h2 className="text-xl text-gray-600 font-medium mb-6">
+                          Generative Engine Optimization
+                        </h2>
+                        <p className="text-gray-500 text-lg leading-relaxed">
+                          Optimize your website for AI-powered search engines and generative AI systems. 
+                          Enter a website URL below to analyze and improve your content for better visibility 
+                          in AI-generated responses and recommendations.
+                        </p>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-12">
+                        <div className="bg-blue-50 rounded-xl p-6">
+                          <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mx-auto mb-4">
+                            <Search className="w-6 h-6 text-blue-600" />
+                          </div>
+                          <h3 className="font-semibold text-gray-900 mb-2">AI Search Optimization</h3>
+                          <p className="text-gray-600 text-sm">Enhance your content for AI-powered search engines and chatbots</p>
+                        </div>
+                        
+                        <div className="bg-purple-50 rounded-xl p-6">
+                          <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mx-auto mb-4">
+                            <Target className="w-6 h-6 text-purple-600" />
+                          </div>
+                          <h3 className="font-semibold text-gray-900 mb-2">Content Analysis</h3>
+                          <p className="text-gray-600 text-sm">Deep analysis of your content structure and relevance</p>
+                        </div>
+                        
+                        <div className="bg-green-50 rounded-xl p-6">
+                          <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mx-auto mb-4">
+                            <ExternalLink className="w-6 h-6 text-green-600" />
+                          </div>
+                          <h3 className="font-semibold text-gray-900 mb-2">Multi-Platform Reach</h3>
+                          <p className="text-gray-600 text-sm">Optimize for various AI platforms and recommendation systems</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+
+
+        {/* Floating Bottom Input */}
+        <div className="fixed bottom-16 left-1/2 transform -translate-x-1/2 w-full max-w-3xl px-6 z-50">
+          <form onSubmit={handleUrlSubmit}>
+            <div className="flex space-x-3 items-center">
+              <input
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="Please input an URL to a website you want to optimize."
+                className="flex-1 px-6 py-4 text-lg bg-white border border-gray-300 rounded-2xl shadow-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 placeholder:text-gray-400"
+                disabled={isCrawling}
+              />
+              <button
+                type="submit"
+                disabled={!url.trim() || isCrawling}
+                className="bg-gradient-to-r from-blue-600 to-purple-600 text-white px-8 py-4 rounded-2xl font-semibold text-lg hover:from-blue-700 hover:to-purple-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 flex items-center space-x-2 shadow-lg"
+              >
+                {isCrawling ? (
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                ) : (
+                  <>
+                    <span>Optimize</span>
+                    <ArrowRight className="h-5 w-5" />
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      </main>
+      </div>
+    </div>
+  )
+}
+
+export default function OptimizePage() {
+  return <OptimizeContent />
+}
