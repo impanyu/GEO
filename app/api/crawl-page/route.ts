@@ -1,4 +1,4 @@
-import { NextApiRequest, NextApiResponse } from 'next'
+import { NextRequest, NextResponse } from 'next/server'
 import puppeteer from 'puppeteer'
 
 interface CrawlPageResponse {
@@ -92,31 +92,22 @@ async function fetchWithFallback(url: string): Promise<{ html: string; title: st
   }
 }
 
-export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse<CrawlPageResponse>
-) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({
-      success: false,
-      message: 'Method not allowed'
-    })
-  }
-
-  const { url } = req.body
-
-  if (!url || typeof url !== 'string') {
-    return res.status(400).json({
-      success: false,
-      message: 'URL is required'
-    })
-  }
-
-  // Skip Puppeteer entirely since it's causing consistent failures
-  // Go directly to fallback method which is more reliable
-  console.log('Using fallback fetch method (Puppeteer disabled due to instability)...')
-  
+export async function POST(request: NextRequest): Promise<NextResponse<CrawlPageResponse>> {
   try {
+    const body = await request.json()
+    const { url } = body
+
+    if (!url || typeof url !== 'string') {
+      return NextResponse.json({
+        success: false,
+        message: 'URL is required'
+      }, { status: 400 })
+    }
+
+    // Skip Puppeteer entirely since it's causing consistent failures
+    // Go directly to fallback method which is more reliable
+    console.log('Using fallback fetch method (Puppeteer disabled due to instability)...')
+    
     const { html, title } = await fetchWithFallback(url)
     
     // Process the HTML while preserving structure
@@ -250,21 +241,21 @@ export default async function handler(
       </html>
     `
 
-    return res.status(200).json({
+    return NextResponse.json({
       success: true,
       message: 'Page crawled successfully (fetch mode)',
       html: containedHtml,
       title: title,
       url: url
-    })
+    }, { status: 200 })
 
   } catch (error) {
     console.error('Fetch crawling failed:', error)
     
-    return res.status(500).json({
+    return NextResponse.json({
       success: false,
       message: 'Failed to crawl the page',
       error: error instanceof Error ? error.message : 'Unknown error'
-    })
+    }, { status: 500 })
   }
 }

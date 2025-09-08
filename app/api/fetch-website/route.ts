@@ -1,6 +1,6 @@
-import { NextApiRequest, NextApiResponse } from 'next'
+import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
-import { authOptions } from './auth/[...nextauth]'
+import { authOptions } from '@/lib/auth'
 import fs from 'fs'
 import path from 'path'
 import { URL } from 'url'
@@ -1414,30 +1414,19 @@ function escapeRegExp(string: string): string {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-// Extend the API route timeout for complex websites
-export const config = {
-  api: {
-    responseLimit: false,
-    externalResolver: true,
-  },
-}
-
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' })
-  }
-
-  // Check authentication
-  const session = await getServerSession(req, res, authOptions)
-  if (!session) {
-    return res.status(401).json({ error: 'Unauthorized' })
-  }
-
+export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    const { url, forceRefresh } = req.body
+    // Check authentication
+    const session = await getServerSession(authOptions)
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const body = await request.json()
+    const { url, forceRefresh } = body
     
     if (!url) {
-      return res.status(400).json({ error: 'URL is required' })
+      return NextResponse.json({ error: 'URL is required' }, { status: 400 })
     }
 
     const safeDirName = createSafeDirName(url)
@@ -1464,12 +1453,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
       
       console.log('📦 Using cached content for:', url)
-      return res.status(200).json({ 
+      return NextResponse.json({ 
         success: true, 
         path: safeDirName,
         cached: true,
         title: cachedTitle
-      })
+      }, { status: 200 })
     }
 
     // If force refresh is requested, clear the existing cache
@@ -1494,14 +1483,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       
       console.log(`✅ Playwright succeeded with ${result.resourceCount} resources`)
       
-      return res.status(200).json({
+      return NextResponse.json({
         success: true,
         path: safeDirName,
         cached: false,
         resourceCount: result.resourceCount,
         method: result.method,
         title: result.title
-      })
+      }, { status: 200 })
       
     } catch (playwrightError) {
       console.error('❌ Playwright failed:', playwrightError)
@@ -1527,7 +1516,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           console.log('Could not extract title from saved HTML:', error)
         }
         
-        return res.status(200).json({
+        return NextResponse.json({
           success: true,
           path: safeDirName,
           cached: false,
@@ -1535,7 +1524,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           method: 'playwright-partial',
           title: savedTitle,
           note: 'Playwright completed with errors but content was saved'
-        })
+        }, { status: 200 })
       }
       
       console.log('📦 Using fallback fetch method (Playwright failed completely)...')
@@ -1544,27 +1533,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const { content: htmlContent } = await downloadFile(url, url)
       
       if (!htmlContent) {
-        return res.status(500).json({ error: 'Failed to fetch website content' })
+        return NextResponse.json({ error: 'Failed to fetch website content' }, { status: 500 })
       }
 
       // Save basic HTML file
       fs.writeFileSync(path.join(websiteDir, 'index.html'), htmlContent as string)
       
-      return res.status(200).json({
+      return NextResponse.json({
         success: true,
         path: safeDirName,
         cached: false,
         resourceCount: 1,
         method: 'fallback',
         title: url
-      })
+      }, { status: 200 })
     }
 
   } catch (error) {
     console.error('Error in fetch-website:', error)
-    res.status(500).json({ 
+    return NextResponse.json({ 
       error: 'Failed to fetch website',
       details: error instanceof Error ? error.message : 'Unknown error'
-    })
+    }, { status: 500 })
   }
 }
