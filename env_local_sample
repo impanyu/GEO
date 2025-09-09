@@ -1,0 +1,16 @@
+# NextAuth.js
+NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_SECRET=springbrand-ai-production-secret-key-2024-very-secure-random-string
+
+# Google OAuth
+GOOGLE_CLIENT_ID=147728414537-2n0k21hhbsm9c4n3t563d525469np06s.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=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
+
+# MongoDB
+MONGODB_URI=mongodb://localhost:27018/springbrand-ai
+
+# OpenAI
+OPENAI_API_KEY=
+
+# Exa.ai API
+EXA_API_KEY=4caffd9f-eed2-49a8-b850-98e77a3f92ce
