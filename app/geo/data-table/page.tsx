@@ -30,7 +30,7 @@ const QUERIES_PER_PROMPT = 5
 
 interface BrandAnalysis {
   brandName: string
-  totalAppearancesAcross10Responses: number
+  totalAppearancesAcrossResponses: number
   avgAppearancesPerResponse: number
   avgRank: number
 }
@@ -539,9 +539,9 @@ function DataTableContent() {
                     <span className="text-sm font-medium text-gray-600">Total Queries</span>
                   </div>
                   <div className="text-2xl font-bold text-gray-900 mt-2">
-                    {results.length * 10}
+                    {results.reduce((sum, result) => sum + result.totalCitationsOfAllBrands, 0)}
                   </div>
-                  <div className="text-xs text-gray-500 mt-1">10 per prompt</div>
+                  <div className="text-xs text-gray-500 mt-1">Total queries across all prompts</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="flex items-center space-x-2">
@@ -551,7 +551,8 @@ function DataTableContent() {
                   <div className="text-2xl font-bold text-gray-900 mt-2">
                     {results.length > 0 ? (
                       (results.reduce((sum, result) => {
-                        const visibility = result.brandAnalysis.totalAppearancesAcross10Responses / result.totalCitationsOfAllBrands
+                        const totalAppearances = result.brandAnalysis.totalAppearancesAcrossResponses ?? (result.brandAnalysis as any).totalAppearancesAcross10Responses ?? 0
+                        const visibility = totalAppearances / result.totalCitationsOfAllBrands
                         return sum + visibility
                       }, 0) / results.length * 100).toFixed(2)
                     ) : '0.00'}%
@@ -726,7 +727,7 @@ function DataTableContent() {
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-center">
                               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                                {result.brandAnalysis.totalAppearancesAcross10Responses}/10
+                                {(result.brandAnalysis.totalAppearancesAcrossResponses ?? (result.brandAnalysis as any).totalAppearancesAcross10Responses ?? 0)}/{result.totalCitationsOfAllBrands}
                               </span>
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-center">

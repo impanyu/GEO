@@ -49,14 +49,16 @@ function groupByTopic(results: DataTableResult[]): TopicGroupedResult[] {
     const firstResult = topicResults[0]
     const promptCount = topicResults.length
     
-    // Calculate total appearances across all prompts in this topic
+    // Calculate total appearances and total queries across all prompts in this topic
     let totalAppearances = 0
+    let totalQueries = 0
     let totalQueriesWithNonZeroRank = 0
     let totalRankSum = 0
     const prompts: string[] = []
     
     topicResults.forEach(result => {
-      totalAppearances += result.brandAnalysis.totalAppearancesAcross10Responses
+      totalAppearances += result.brandAnalysis.totalAppearancesAcrossResponses
+      totalQueries += result.totalCitationsOfAllBrands // Sum actual queries per result
       prompts.push(result.prompt)
       
       // Only include non-zero ranks in average calculation
@@ -66,14 +68,19 @@ function groupByTopic(results: DataTableResult[]): TopicGroupedResult[] {
       }
     })
     
-    // Total queries = promptCount × queriesPerPrompt (which is stored in totalCitationsOfAllBrands)
-    const totalQueries = promptCount * firstResult.totalCitationsOfAllBrands
-    
     // Visibility = total appearances / total queries
     const visibility = totalQueries > 0 ? totalAppearances / totalQueries : 0
     
     // Average rank = sum of non-zero ranks / count of non-zero ranks
     const avgRank = totalQueriesWithNonZeroRank > 0 ? totalRankSum / totalQueriesWithNonZeroRank : 0
+    
+    // Debug logging for topic grouping
+    console.log(`Topic "${topic}" calculation:`)
+    console.log(`- Prompt count: ${promptCount}`)
+    console.log(`- Total appearances: ${totalAppearances}`)
+    console.log(`- Total queries: ${totalQueries}`)
+    console.log(`- Individual totalCitationsOfAllBrands:`, topicResults.map(r => r.totalCitationsOfAllBrands))
+    console.log(`- Visibility: ${(visibility * 100).toFixed(1)}%`)
     
     // Use the most recent datetime
     const datetime = new Date(Math.max(...topicResults.map(r => r.datetime.getTime())))

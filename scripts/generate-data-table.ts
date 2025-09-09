@@ -20,7 +20,10 @@ const SUPPORTED_PLATFORMS = ['openai', 'google-ai'] as const
 type AgenticPlatform = typeof SUPPORTED_PLATFORMS[number]
 
 // Configuration: Number of queries per prompt (adjust this value to change query frequency)
-const QUERIES_PER_PROMPT = 1
+const QUERIES_PER_PROMPT = 5
+
+// Configuration: Number of prompts to sample for analysis (adjust this value to change sample size)
+const SAMPLED_PROMPTS_COUNT = 5
 
 interface GeneratePromptSetResponse {
   success: boolean
@@ -403,7 +406,7 @@ If the brand doesn't appear at all, return:
     
     const brandAnalysis: BrandAnalysis = {
       brandName,
-      totalAppearancesAcross10Responses: totalAppearancesAcrossResponses,
+      totalAppearancesAcrossResponses: totalAppearancesAcrossResponses,
       avgAppearancesPerResponse: Math.round(avgAppearancesPerResponse * 100) / 100,
       avgRank: Math.round(avgRank * 100) / 100
     }
@@ -419,7 +422,7 @@ If the brand doesn't appear at all, return:
     // Return default analysis for all brands
     return brandNames.map(brandName => ({
       brandName,
-      totalAppearancesAcross10Responses: 0,
+      totalAppearancesAcrossResponses: 0,
       avgAppearancesPerResponse: 0,
       avgRank: 0
     }))
@@ -489,11 +492,11 @@ async function generateDataTableForUrls(
     console.log(`Total prompts collected: ${allPrompts.length}`)
     console.log(`Brand names: ${brandNames.join(', ')}`)
     
-    // Step 2: Randomly sample 5 prompts from merged set
-    const selectedPrompts = allPrompts.length <= 5 
+    // Step 2: Randomly sample prompts from merged set
+    const selectedPrompts = allPrompts.length <= SAMPLED_PROMPTS_COUNT 
       ? allPrompts 
-      : allPrompts.sort(() => Math.random() - 0.5).slice(0, 5)
-    console.log(`Randomly selected ${selectedPrompts.length} prompts for analysis`)
+      : allPrompts.sort(() => Math.random() - 0.5).slice(0, SAMPLED_PROMPTS_COUNT)
+    console.log(`Randomly selected ${selectedPrompts.length} prompts for analysis (configured: ${SAMPLED_PROMPTS_COUNT})`)
     
     // Step 3: For each prompt, query multiple times and store responses
     const results: DataTableResult[] = []
@@ -591,7 +594,7 @@ async function generateDataTableForUrls(
             datetime: new Date(),
             brandAnalysis: {
               brandName: brandNames[i],
-              totalAppearancesAcross10Responses: 0,
+              totalAppearancesAcrossResponses: 0,
               avgAppearancesPerResponse: 0,
               avgRank: 0
             },
@@ -678,7 +681,7 @@ async function main() {
       const brandName = result.brandName
       const existing = brandMetrics.get(brandName) || { totalAppearances: 0, avgRank: 0, count: 0 }
       
-      existing.totalAppearances += result.brandAnalysis.totalAppearancesAcross10Responses
+      existing.totalAppearances += result.brandAnalysis.totalAppearancesAcrossResponses
       existing.avgRank += result.brandAnalysis.avgRank
       existing.count += 1
       

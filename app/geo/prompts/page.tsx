@@ -126,35 +126,47 @@ function PromptsContent() {
   const downloadPrompts = () => {
     if (!result) return
 
-    const content = [
-      `Brand: ${result.brandName}`,
-      `Website: ${result.brandUrl}`,
-      `Generated: ${new Date().toISOString()}`,
-      `Total Prompts: ${result.totalPrompts}`,
-      '',
-      'TOPICS:',
-      ...result.topics.map(topic => `• ${topic}`),
-      '',
-      'KEYWORDS (with source topics):',
-      ...result.keywords.map(keyword => `• ${keyword} → ${result.keywordToTopic[keyword] || 'Unknown Topic'}`),
-      '',
-      'PROMPTS (with source keywords and topics):',
-      ...result.prompts.map((prompt, index) => {
-        const keyword = result.promptToKeyword[prompt]
-        const topic = keyword ? result.keywordToTopic[keyword] : 'Unknown'
-        return `${index + 1}. ${prompt} → ${keyword || 'Unknown Keyword'} → ${topic}`
-      }),
-      '',
-      'MAPPING SUMMARY:',
-      `• Keyword→Topic mappings: ${Object.keys(result.keywordToTopic).length}`,
-      `• Prompt→Keyword mappings: ${Object.keys(result.promptToKeyword).length}`,
-    ].join('\n')
+    // Create JSON object with all the prompt data
+    const jsonData = {
+      metadata: {
+        brandName: result.brandName,
+        brandUrl: result.brandUrl,
+        generated: new Date().toISOString(),
+        totalPrompts: result.totalPrompts,
+        topicsCount: result.topics.length,
+        keywordsCount: result.keywords.length
+      },
+      topics: result.topics,
+      keywords: result.keywords,
+      prompts: result.prompts,
+      mappings: {
+        keywordToTopic: result.keywordToTopic,
+        promptToKeyword: result.promptToKeyword
+      },
+      enrichedData: {
+        keywordsWithTopics: result.keywords.map(keyword => ({
+          keyword,
+          topic: result.keywordToTopic[keyword] || 'Unknown Topic'
+        })),
+        promptsWithMapping: result.prompts.map((prompt, index) => {
+          const keyword = result.promptToKeyword[prompt]
+          const topic = keyword ? result.keywordToTopic[keyword] : 'Unknown'
+          return {
+            index: index + 1,
+            prompt,
+            keyword: keyword || 'Unknown Keyword',
+            topic
+          }
+        })
+      }
+    }
 
-    const blob = new Blob([content], { type: 'text/plain' })
+    const content = JSON.stringify(jsonData, null, 2)
+    const blob = new Blob([content], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `prompts-${result.brandUrl.replace(/[^a-zA-Z0-9]/g, '_')}-${Date.now()}.txt`
+    a.download = `prompts-${result.brandUrl.replace(/[^a-zA-Z0-9]/g, '_')}-${Date.now()}.json`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
