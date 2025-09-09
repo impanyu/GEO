@@ -25,6 +25,8 @@ interface PromptResult {
   keywords: string[]
   totalPrompts: number
   prompts: string[]
+  keywordToTopic: { [keyword: string]: string }
+  promptToKeyword: { [prompt: string]: string }
 }
 
 function normalizeUrl(url: string): string {
@@ -133,11 +135,19 @@ function PromptsContent() {
       'TOPICS:',
       ...result.topics.map(topic => `• ${topic}`),
       '',
-      'KEYWORDS:',
-      ...result.keywords.map(keyword => `• ${keyword}`),
+      'KEYWORDS (with source topics):',
+      ...result.keywords.map(keyword => `• ${keyword} → ${result.keywordToTopic[keyword] || 'Unknown Topic'}`),
       '',
-      'PROMPTS:',
-      ...result.prompts.map((prompt, index) => `${index + 1}. ${prompt}`),
+      'PROMPTS (with source keywords and topics):',
+      ...result.prompts.map((prompt, index) => {
+        const keyword = result.promptToKeyword[prompt]
+        const topic = keyword ? result.keywordToTopic[keyword] : 'Unknown'
+        return `${index + 1}. ${prompt} → ${keyword || 'Unknown Keyword'} → ${topic}`
+      }),
+      '',
+      'MAPPING SUMMARY:',
+      `• Keyword→Topic mappings: ${Object.keys(result.keywordToTopic).length}`,
+      `• Prompt→Keyword mappings: ${Object.keys(result.promptToKeyword).length}`,
     ].join('\n')
 
     const blob = new Blob([content], { type: 'text/plain' })
