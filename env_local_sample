@@ -14,3 +14,6 @@ OPENAI_API_KEY=
 
 # Exa.ai API
 EXA_API_KEY=4caffd9f-eed2-49a8-b850-98e77a3f92ce
+
+# SerpApi (for web search)
+SERPAPI_KEY=

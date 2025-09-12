@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "generate-prompts": "tsx scripts/generate-prompts.ts",
-    "generate-data-table": "tsx scripts/generate-data-table.ts"
+    "generate-data-table": "tsx scripts/generate-data-table.ts",
+    "analyze-web-content": "tsx scripts/analyze-web-content.ts"
   },
   "dependencies": {
     "@heroicons/react": "^2.0.18",

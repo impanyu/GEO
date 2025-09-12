@@ -117,6 +117,9 @@ OPENAI_API_KEY=your-openai-api-key
 # Exa.ai API (for web content analysis)
 EXA_API_KEY=your-exa-api-key
 
+# SerpApi (for web search analysis)
+SERPAPI_KEY=your-serpapi-key
+
 # MongoDB (required for data storage)
 MONGODB_URI=mongodb://localhost:27017/springbrand-ai
 
@@ -179,6 +182,61 @@ npm run generate-data-table google-ai https://apple.com
 - Cached in MongoDB 
 - Accessible via web interface at `/geo/data-table`
 - Supports both individual prompt and topic-grouped analysis
+
+### 3. Analyze Web Content
+
+Perform comprehensive web content analysis across 25+ major websites to understand brand perception and content dimensions.
+
+```bash
+# Analyze web content for a brand
+npm run analyze-web-content https://apple.com
+
+# Example with other brands
+npm run analyze-web-content https://tesla.com
+npm run analyze-web-content https://nike.com
+```
+
+**Configuration Variables:**
+- `NUMBER_OF_SAMPLED_PROMPTS`: Number of prompts to sample for analysis (default: 5)
+
+**Target Websites (25 sites):**
+- News & Media: Wikipedia, Google Blog, NY Times, Forbes, Washington Post
+- Social & Reviews: Reddit, Facebook, Instagram, Yelp, Trustpilot
+- Business & Tech: LinkedIn, Medium, G2, Capterra, NerdWallet
+- E-commerce & Entertainment: Amazon, YouTube, IMDB
+- Health & Lifestyle: Healthline, Good Housekeeping, Bankrate
+- Reference: Britannica, Quora, TripAdvisor
+
+**15 Content Dimensions Analyzed:**
+1. **Functionality** - Core features and problem-solving capabilities
+2. **Quality** - Materials, build, craftsmanship, durability
+3. **Performance/Reliability** - Consistency, uptime, dependability
+4. **Design & Aesthetic** - Visual identity, style, UI/UX
+5. **Price/Value Proposition** - Cost-benefit analysis, value for money
+6. **Innovation/Technology** - Novel aspects, technological edge
+7. **Safety/Security/Privacy** - Protection, compliance, data safety
+8. **Sustainability/Ethics** - Environmental impact, ethical practices
+9. **Trustworthiness/Credibility** - Certifications, reviews, reputation
+10. **Core Values/Mission** - Brand beliefs, social mission
+11. **Story/Origin** - Founder's story, brand narrative
+12. **Emotional Connection** - Brand personality, customer feelings
+13. **Differentiation/USP** - Unique selling propositions
+14. **User/Audience Identity** - Target demographics, user experience
+15. **After-Sales Support** - Customer service, loyalty programs
+
+**What it does:**
+1. **Prompt Sampling**: Gets 5 SEO prompts from existing cache or generates new ones
+2. **Multi-Site Search**: Searches each prompt across all 25 target websites using [SerpApi](https://serpapi.com/search-api)
+3. **Content Extraction**: Retrieves full webpage content using Exa.ai API
+4. **AI Content Analysis**: Uses GPT-4 to categorize content into 15 brand dimensions
+5. **Frequency Counting**: Tracks snippet frequency and semantic similarity
+6. **Data Storage**: Stores comprehensive analysis in `full_web_content` MongoDB collection
+
+**Output:**
+- Comprehensive brand perception analysis across major web platforms
+- Content categorized into 15 strategic dimensions
+- Frequency analysis of brand mentions and associations
+- Stored in MongoDB `full_web_content` collection for further analysis
 
 ### 3. Script Configuration
 
