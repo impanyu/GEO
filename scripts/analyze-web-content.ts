@@ -10,11 +10,18 @@ import {
   type PromptCacheDocument
 } from '../lib/models/PromptCache'
 import { normalizeUrl } from '../lib/models/PromptCache'
+import { 
+  FullWebContentCache,
+  closeDatabaseConnection,
+  type WebsiteContent,
+  type ContentDimension,
+  type ContentSnippet
+} from '../lib/models/FullWebContentCache'
 import { generatePromptsForUrl } from './generate-prompts'
 import OpenAI from 'openai'
-import { MongoClient, Db, Collection } from 'mongodb'
 
 // Configuration: Number of prompts to sample for analysis
+// Note: This should match SAMPLED_PROMPTS_COUNT in generate-data-table.ts for consistency
 const NUMBER_OF_SAMPLED_PROMPTS = 5
 
 // Predefined websites to search
@@ -65,88 +72,7 @@ const CONTENT_DIMENSIONS = {
   'After-Sales Support / Community / Loyalty': 'What happens after purchase: warranty/support, customer service, community building, loyalty programs, repeat engagement.'
 }
 
-// MongoDB connection for full_web_content collection
-let client: MongoClient | null = null
-let db: Db | null = null
-
-async function connectToDatabase(): Promise<Db> {
-  if (db) {
-    return db
-  }
-
-  if (!client) {
-    client = new MongoClient(process.env.MONGODB_URI!)
-  }
-
-  await client.connect()
-  db = client.db('springbrand-ai')
-  return db
-}
-
-async function closeDatabaseConnection(): Promise<void> {
-  if (client) {
-    await client.close()
-    client = null
-    db = null
-  }
-}
-
-// Full Web Content Collection Schema
-interface ContentSnippet {
-  [snippet: string]: number // snippet text -> frequency
-}
-
-interface ContentDimension {
-  [dimension: string]: ContentSnippet
-}
-
-interface WebsiteContent {
-  [websiteUrl: string]: ContentDimension
-}
-
-interface FullWebContentDocument {
-  _id?: string
-  brandName: string
-  brandUrl: string
-  sampledTime: Date
-  websiteContent: WebsiteContent
-}
-
-class FullWebContentCache {
-  private static async getCollection(): Promise<Collection<FullWebContentDocument>> {
-    const database = await connectToDatabase()
-    return database.collection<FullWebContentDocument>('full_web_content')
-  }
-
-  static async create(
-    brandName: string,
-    brandUrl: string,
-    websiteContent: WebsiteContent
-  ): Promise<string | null> {
-    try {
-      const collection = await this.getCollection()
-      const now = new Date()
-      
-      const document: FullWebContentDocument = {
-        brandName,
-        brandUrl,
-        sampledTime: now,
-        websiteContent
-      }
-
-      const result = await collection.insertOne(document)
-      if (result.acknowledged) {
-        console.log(`✅ Stored web content analysis for ${brandName}`)
-        return result.insertedId.toString()
-      }
-      
-      return null
-    } catch (error) {
-      console.error('❌ Error storing web content analysis:', error)
-      return null
-    }
-  }
-}
+// Content dimensions are now imported from the model file
 
 // Initialize OpenAI and Exa clients
 let openai: OpenAI
@@ -299,12 +225,12 @@ async function getOrGenerateSampledPrompts(brandUrl: string): Promise<{ prompts:
       cachedPrompts = await PromptCache.findByUrl(normalizedUrl)
     }
 
-    if (!cachedPrompts || !cachedPrompts.prompts) {
+    if (!cachedPrompts || !cachedPrompts.data.prompts) {
       throw new Error('Failed to get or generate prompts')
     }
 
     // Sample prompts randomly
-    const allPrompts = cachedPrompts.prompts
+    const allPrompts = cachedPrompts.data.prompts
     const sampledPrompts = allPrompts.length <= NUMBER_OF_SAMPLED_PROMPTS 
       ? allPrompts 
       : allPrompts.sort(() => Math.random() - 0.5).slice(0, NUMBER_OF_SAMPLED_PROMPTS)
@@ -313,7 +239,7 @@ async function getOrGenerateSampledPrompts(brandUrl: string): Promise<{ prompts:
     
     return {
       prompts: sampledPrompts,
-      brandName: cachedPrompts.brandName
+      brandName: cachedPrompts.data.brandName
     }
 
   } catch (error) {

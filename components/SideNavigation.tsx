@@ -16,7 +16,8 @@ import {
   ChevronUp,
   MessageSquare,
   Table,
-  BarChart3
+  BarChart3,
+  Globe
 } from 'lucide-react'
 import { useNavigation } from '@/contexts/NavigationContext'
 
@@ -78,6 +79,12 @@ const geoSubNavItems = [
     href: '/geo/data-table',
     icon: Table,
     description: 'Data table view'
+  },
+  {
+    name: 'Full Web Content',
+    href: '/geo/full-web-content',
+    icon: Globe,
+    description: 'Web content analysis'
   },
   {
     name: 'GEO Result',
