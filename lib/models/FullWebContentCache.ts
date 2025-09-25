@@ -27,24 +27,24 @@ export async function closeDatabaseConnection(): Promise<void> {
 }
 
 // Data model interfaces
-export interface ContentSnippet {
-  [snippet: string]: number // snippet text -> frequency
-}
-
-export interface ContentDimension {
-  [dimension: string]: ContentSnippet
+export interface ContentSnippets {
+  [normalizedDomain: string]: {
+    sentences: string[] // list of sentences
+    visibility: number  // floating number, default 0
+  }
 }
 
 export interface WebsiteContent {
-  [websiteUrl: string]: ContentDimension
+  [dimension: string]: ContentSnippets // dimension -> websites with content snippets
 }
 
 export interface FullWebContentDocument {
   _id?: string
   brandName: string
   brandUrl: string
+  normalizedBrandUrl: string
   sampledTime: Date
-  websiteContent: WebsiteContent
+  websiteContent: WebsiteContent // dimension -> {domain -> sentences[]}
 }
 
 // FullWebContentCache model class
@@ -55,11 +55,19 @@ export class FullWebContentCache {
   }
 
   /**
+   * Get the MongoDB collection (for external use)
+   */
+  static async getCollectionInstance(): Promise<Collection<FullWebContentDocument>> {
+    return this.getCollection()
+  }
+
+  /**
    * Store full web content analysis
    */
   static async create(
     brandName: string,
     brandUrl: string,
+    normalizedBrandUrl: string,
     websiteContent: WebsiteContent
   ): Promise<string | null> {
     try {
@@ -69,6 +77,7 @@ export class FullWebContentCache {
       const document: FullWebContentDocument = {
         brandName,
         brandUrl,
+        normalizedBrandUrl,
         sampledTime: now,
         websiteContent
       }
@@ -87,12 +96,12 @@ export class FullWebContentCache {
   }
 
   /**
-   * Find web content analysis by brand URL
+   * Find web content analysis by normalized brand URL
    */
-  static async findByBrandUrl(brandUrl: string): Promise<FullWebContentDocument | null> {
+  static async findByBrandUrl(normalizedBrandUrl: string): Promise<FullWebContentDocument | null> {
     try {
       const collection = await this.getCollection()
-      return await collection.findOne({ brandUrl })
+      return await collection.findOne({ normalizedBrandUrl })
     } catch (error) {
       console.error('❌ Error finding web content analysis:', error)
       return null
@@ -154,12 +163,12 @@ export class FullWebContentCache {
   }
 
   /**
-   * Delete web content analysis by brand URL
+   * Delete web content analysis by normalized brand URL
    */
-  static async deleteByBrandUrl(brandUrl: string): Promise<boolean> {
+  static async deleteByBrandUrl(normalizedBrandUrl: string): Promise<boolean> {
     try {
       const collection = await this.getCollection()
-      const result = await collection.deleteOne({ brandUrl })
+      const result = await collection.deleteOne({ normalizedBrandUrl })
       return result.deletedCount > 0
     } catch (error) {
       console.error('❌ Error deleting web content analysis:', error)
@@ -189,6 +198,31 @@ export class FullWebContentCache {
       return result.acknowledged && result.modifiedCount > 0
     } catch (error) {
       console.error('❌ Error updating web content analysis:', error)
+      return false
+    }
+  }
+
+  /**
+   * Update visibility for web content analysis by normalized brand URL
+   */
+  static async updateVisibility(
+    normalizedBrandUrl: string,
+    websiteContent: WebsiteContent
+  ): Promise<boolean> {
+    try {
+      const collection = await this.getCollection()
+      const result = await collection.updateOne(
+        { normalizedBrandUrl },
+        { 
+          $set: { 
+            websiteContent,
+            sampledTime: new Date()
+          }
+        }
+      )
+      return result.acknowledged && result.modifiedCount > 0
+    } catch (error) {
+      console.error('❌ Error updating web content visibility:', error)
       return false
     }
   }

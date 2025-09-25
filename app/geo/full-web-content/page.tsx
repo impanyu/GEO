@@ -1,30 +1,30 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useSession } from 'next-auth/react'
-import { useRouter } from 'next/navigation'
-import { Search, Globe, Calendar, BarChart3, Download, Eye, EyeOff, ChevronDown, ChevronRight } from 'lucide-react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { Search, Globe, Calendar, BarChart3, Download, Eye, EyeOff, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
 import { useNavigation } from '@/contexts/NavigationContext'
 import SideNavigation from '@/components/SideNavigation'
 import LoadingSpinner from '@/components/LoadingSpinner'
 
 // Type definitions
-interface ContentSnippet {
-  [snippet: string]: number
-}
-
-interface ContentDimension {
-  [dimension: string]: ContentSnippet
+interface ContentSnippets {
+  [normalizedDomain: string]: {
+    sentences: string[] // list of sentences
+    visibility: number  // floating number, default 0
+  } | string[] // Backward compatibility: old format was just string[]
 }
 
 interface WebsiteContent {
-  [websiteUrl: string]: ContentDimension
+  [dimension: string]: ContentSnippets // dimension -> websites with content snippets
 }
 
 interface FullWebContentDocument {
   _id?: string
   brandName: string
   brandUrl: string
+  normalizedBrandUrl: string
   sampledTime: string | Date
   websiteContent: WebsiteContent
 }
@@ -34,6 +34,13 @@ interface ApiResponse {
   data?: FullWebContentDocument
   error?: string
   message?: string
+}
+
+interface AllWebContentResponse {
+  success: boolean
+  data?: FullWebContentDocument[]
+  error?: string
+  total?: number
 }
 
 // Content dimensions with descriptions for better understanding
@@ -58,18 +65,102 @@ const CONTENT_DIMENSIONS_INFO = {
 export default function FullWebContentPage() {
   const { data: session, status } = useSession()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const { isCollapsed } = useNavigation()
   
   const [url, setUrl] = useState('')
   const [analysis, setAnalysis] = useState<FullWebContentDocument | null>(null)
+  const [availableAnalyses, setAvailableAnalyses] = useState<FullWebContentDocument[]>([])
   const [isLoading, setIsLoading] = useState(false)
+  const [isLoadingList, setIsLoadingList] = useState(false)
   const [error, setError] = useState('')
   const [expandedWebsites, setExpandedWebsites] = useState<{ [website: string]: boolean }>({})
   const [expandedDimensions, setExpandedDimensions] = useState<{ [key: string]: boolean }>({})
+  const [selectedBrandUrl, setSelectedBrandUrl] = useState<string>('')
 
   // Handle authentication loading
   if (status === 'loading') {
     return <LoadingSpinner />
+  }
+
+  // Load available analyses on component mount
+  useEffect(() => {
+    loadAvailableAnalyses()
+    
+    // Check if there's a brandUrl parameter in the URL
+    const urlParam = searchParams.get('brandUrl')
+    if (urlParam) {
+      setSelectedBrandUrl(urlParam)
+      loadAnalysisForBrand(urlParam)
+    }
+  }, [searchParams])
+
+  const loadAvailableAnalyses = async () => {
+    setIsLoadingList(true)
+    try {
+      console.log('🔄 Loading available web content analyses...')
+      
+      const response = await fetch('/api/get_all_web_content')
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+
+      const data: AllWebContentResponse = await response.json()
+      
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to fetch analyses')
+      }
+
+      console.log(`✅ Loaded ${data.data?.length || 0} analyses`)
+      setAvailableAnalyses(data.data || [])
+      
+    } catch (error) {
+      console.error('❌ Error loading analyses:', error)
+      setError(error instanceof Error ? error.message : 'Failed to load analyses')
+    } finally {
+      setIsLoadingList(false)
+    }
+  }
+
+  const loadAnalysisForBrand = async (brandUrl: string) => {
+    setIsLoading(true)
+    setError('')
+    setAnalysis(null)
+
+    try {
+      console.log('🔍 Fetching analysis for:', brandUrl)
+      
+      const response = await fetch(`/api/get_full_web_content?url=${encodeURIComponent(brandUrl)}`)
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+
+      const data: ApiResponse = await response.json()
+      
+      if (!data.success) {
+        throw new Error(data.error || data.message || 'Failed to fetch analysis')
+      }
+
+      if (!data.data) {
+        throw new Error('No analysis data returned')
+      }
+
+      console.log('✅ Analysis retrieved successfully')
+      setAnalysis(data.data)
+      
+      // Update URL parameters
+      const newUrl = new URL(window.location.href)
+      newUrl.searchParams.set('brandUrl', brandUrl)
+      window.history.pushState({}, '', newUrl.toString())
+      
+    } catch (error) {
+      console.error('❌ Error fetching analysis:', error)
+      setError(error instanceof Error ? error.message : 'Failed to fetch analysis')
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   const formatDateTime = useCallback((dateTime: string | Date | undefined): string => {
@@ -91,38 +182,13 @@ export default function FullWebContentPage() {
       return
     }
 
-    setIsLoading(true)
-    setError('')
-    setAnalysis(null)
+    await loadAnalysisForBrand(url.trim())
+  }
 
-    try {
-      console.log('🔍 Fetching full web content for:', url)
-      
-      const response = await fetch(`/api/get_full_web_content?url=${encodeURIComponent(url.trim())}`)
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-      }
-
-      const data: ApiResponse = await response.json()
-      
-      if (!data.success) {
-        throw new Error(data.error || data.message || 'Failed to fetch analysis')
-      }
-
-      if (!data.data) {
-        throw new Error('No analysis data returned')
-      }
-
-      console.log('✅ Analysis retrieved successfully')
-      setAnalysis(data.data)
-      
-    } catch (error) {
-      console.error('❌ Error fetching analysis:', error)
-      setError(error instanceof Error ? error.message : 'Failed to fetch analysis')
-    } finally {
-      setIsLoading(false)
-    }
+  const handleBrandSelect = (brandUrl: string) => {
+    setSelectedBrandUrl(brandUrl)
+    setUrl(brandUrl)
+    loadAnalysisForBrand(brandUrl)
   }
 
   const toggleWebsite = (website: string) => {
@@ -158,21 +224,28 @@ export default function FullWebContentPage() {
   const getSummaryStats = () => {
     if (!analysis) return null
     
-    const totalWebsites = Object.keys(analysis.websiteContent).length
+    const allDomains = new Set<string>()
     const allDimensions = new Set<string>()
-    let totalSnippets = 0
+    let totalSentences = 0
     
-    Object.values(analysis.websiteContent).forEach(site => {
-      Object.keys(site).forEach(dimension => allDimensions.add(dimension))
-      Object.values(site).forEach(dimension => {
-        totalSnippets += Object.keys(dimension).length
+    // Structure: dimension -> {domain -> {sentences: [], visibility: number} | string[]} (with backward compatibility)
+    Object.entries(analysis.websiteContent).forEach(([dimension, domains]) => {
+      allDimensions.add(dimension)
+      Object.entries(domains).forEach(([domain, domainData]) => {
+        allDomains.add(domain)
+        // Handle both old (string[]) and new ({sentences: [], visibility: number}) formats
+        if (Array.isArray(domainData)) {
+          totalSentences += domainData.length
+        } else {
+          totalSentences += domainData.sentences?.length || 0
+        }
       })
     })
     
     return {
-      totalWebsites,
+      totalWebsites: allDomains.size,
       totalDimensions: allDimensions.size,
-      totalSnippets,
+      totalSnippets: totalSentences,
       dimensions: Array.from(allDimensions)
     }
   }
@@ -200,48 +273,105 @@ export default function FullWebContentPage() {
 
         {/* Main Content */}
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          {/* URL Input Form */}
+          {/* Available Analyses Section */}
           <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label htmlFor="url" className="block text-sm font-medium text-gray-700 mb-2">
-                Brand URL
-              </label>
-              <div className="flex space-x-3">
-                <div className="flex-1">
-                  <input
-                    type="url"
-                    id="url"
-                    value={url}
-                    onChange={(e) => setUrl(e.target.value)}
-                    placeholder="https://example.com"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-                    disabled={isLoading}
-                    required
-                  />
-                </div>
-                <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg hover:from-blue-700 hover:to-purple-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2 transition-all duration-200"
-                >
-                  {isLoading ? (
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                  ) : (
-                    <Search className="w-4 h-4" />
-                  )}
-                  <span>{isLoading ? 'Loading...' : 'Get Analysis'}</span>
-                </button>
-              </div>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-gray-900">Available Analyses</h2>
+              <button
+                onClick={loadAvailableAnalyses}
+                disabled={isLoadingList}
+                className="flex items-center space-x-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors duration-200 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-4 h-4 ${isLoadingList ? 'animate-spin' : ''}`} />
+                <span>Refresh</span>
+              </button>
             </div>
             
-            {error && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                <p className="text-red-700 text-sm">{error}</p>
+            {isLoadingList ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                <span className="ml-3 text-gray-600">Loading analyses...</span>
+              </div>
+            ) : availableAnalyses.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {availableAnalyses.map((analysisItem) => (
+                  <div
+                    key={analysisItem._id}
+                    className={`border-2 rounded-lg p-4 cursor-pointer transition-all duration-200 ${
+                      selectedBrandUrl === analysisItem.brandUrl
+                        ? 'border-blue-500 bg-blue-50'
+                        : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'
+                    }`}
+                    onClick={() => handleBrandSelect(analysisItem.brandUrl)}
+                  >
+                    <div className="flex items-center space-x-3">
+                      <div className="p-2 bg-blue-100 rounded-lg">
+                        <Globe className="w-5 h-5 text-blue-600" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-semibold text-gray-900 truncate">{analysisItem.brandName}</h3>
+                        <p className="text-sm text-gray-600 truncate">{analysisItem.brandUrl}</p>
+                        <p className="text-xs text-gray-500">
+                          {formatDateTime(analysisItem.sampledTime)}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8">
+                <Globe className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">No Analyses Available</h3>
+                <p className="text-gray-600">
+                  Run the analyze-web-content script to generate brand analysis data.
+                </p>
               </div>
             )}
-          </form>
-        </div>
+          </div>
+
+          {/* Manual URL Input Form */}
+          <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+            <h2 className="text-lg font-bold text-gray-900 mb-4">Or Search by URL</h2>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label htmlFor="url" className="block text-sm font-medium text-gray-700 mb-2">
+                  Brand URL
+                </label>
+                <div className="flex space-x-3">
+                  <div className="flex-1">
+                    <input
+                      type="url"
+                      id="url"
+                      value={url}
+                      onChange={(e) => setUrl(e.target.value)}
+                      placeholder="https://example.com"
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                      disabled={isLoading}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={isLoading}
+                    className="px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg hover:from-blue-700 hover:to-purple-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2 transition-all duration-200"
+                  >
+                    {isLoading ? (
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                    ) : (
+                      <Search className="w-4 h-4" />
+                    )}
+                    <span>{isLoading ? 'Loading...' : 'Get Analysis'}</span>
+                  </button>
+                </div>
+              </div>
+              
+              {error && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                  <p className="text-red-700 text-sm">{error}</p>
+                </div>
+              )}
+            </form>
+          </div>
 
         {/* Analysis Results */}
         {analysis && (
@@ -311,37 +441,47 @@ export default function FullWebContentPage() {
               </div>
             </div>
 
-            {/* Website Content Display */}
+            {/* Content Dimensions Display */}
             <div className="space-y-6">
-              {Object.entries(analysis.websiteContent).map(([website, dimensions]) => {
-                const isWebsiteExpanded = expandedWebsites[website]
-                const dimensionCount = Object.keys(dimensions).length
-                const snippetCount = Object.values(dimensions).reduce((sum, dim) => sum + Object.keys(dim).length, 0)
+              {Object.entries(analysis.websiteContent).map(([dimension, domains]) => {
+                const isDimensionExpanded = expandedWebsites[dimension]
+                const domainCount = Object.keys(domains).length
+                const sentenceCount = Object.values(domains).reduce((sum, domainData) => {
+                  // Handle both old (string[]) and new ({sentences: [], visibility: number}) formats
+                  if (Array.isArray(domainData)) {
+                    return sum + domainData.length
+                  } else {
+                    return sum + (domainData.sentences?.length || 0)
+                  }
+                }, 0)
                 
                 return (
-                  <div key={website} className="bg-white rounded-xl shadow-lg overflow-hidden">
-                    {/* Website Header */}
+                  <div key={dimension} className="bg-white rounded-xl shadow-lg overflow-hidden">
+                    {/* Dimension Header */}
                     <div 
                       className="p-6 border-b border-gray-200 cursor-pointer hover:bg-gray-50 transition-colors duration-200"
-                      onClick={() => toggleWebsite(website)}
+                      onClick={() => toggleWebsite(dimension)}
                     >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-3">
-                          <div className="p-2 bg-blue-100 rounded-lg">
-                            <Globe className="w-5 h-5 text-blue-600" />
+                          <div className="p-2 bg-purple-100 rounded-lg">
+                            <BarChart3 className="w-5 h-5 text-purple-600" />
                           </div>
                           <div>
-                            <h3 className="text-lg font-bold text-gray-900">{website}</h3>
-                            <p className="text-sm text-gray-600">{dimensionCount} dimensions • {snippetCount} snippets</p>
+                            <h3 className="text-lg font-bold text-gray-900">{dimension}</h3>
+                            <p className="text-sm text-gray-600 mt-1">
+                              {CONTENT_DIMENSIONS_INFO[dimension as keyof typeof CONTENT_DIMENSIONS_INFO] || 'Content dimension analysis'}
+                            </p>
+                            <p className="text-xs text-gray-500 mt-1">{domainCount} domains • {sentenceCount} sentences</p>
                           </div>
                         </div>
                         <div className="flex items-center space-x-2">
-                          {isWebsiteExpanded ? (
+                          {isDimensionExpanded ? (
                             <EyeOff className="w-5 h-5 text-gray-400" />
                           ) : (
                             <Eye className="w-5 h-5 text-gray-400" />
                           )}
-                          {isWebsiteExpanded ? (
+                          {isDimensionExpanded ? (
                             <ChevronDown className="w-5 h-5 text-gray-400" />
                           ) : (
                             <ChevronRight className="w-5 h-5 text-gray-400" />
@@ -350,34 +490,40 @@ export default function FullWebContentPage() {
                       </div>
                     </div>
 
-                    {/* Website Content */}
-                    {isWebsiteExpanded && (
+                    {/* Domain Content */}
+                    {isDimensionExpanded && (
                       <div className="p-6">
                         <div className="space-y-4">
-                          {Object.entries(dimensions).map(([dimension, snippets]) => {
-                            const websiteDimensionKey = `${website}-${dimension}`
-                            const isDimensionExpanded = expandedDimensions[websiteDimensionKey]
-                            const snippetCount = Object.keys(snippets).length
-                            const totalFrequency = Object.values(snippets).reduce((sum, freq) => sum + freq, 0)
+                          {Object.entries(domains).map(([domain, domainData]) => {
+                            const domainDimensionKey = `${dimension}-${domain}`
+                            const isDomainExpanded = expandedDimensions[domainDimensionKey]
+                            
+                            // Handle both old (string[]) and new ({sentences: [], visibility: number}) formats
+                            const isOldFormat = Array.isArray(domainData)
+                            const sentences = isOldFormat ? domainData : domainData.sentences
+                            const visibility = isOldFormat ? 0 : domainData.visibility
                             
                             return (
-                              <div key={dimension} className="border border-gray-200 rounded-lg overflow-hidden">
-                                {/* Dimension Header */}
+                              <div key={domain} className="border border-gray-200 rounded-lg overflow-hidden">
+                                {/* Domain Header */}
                                 <div 
                                   className="p-4 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors duration-200"
-                                  onClick={() => toggleDimension(websiteDimensionKey)}
+                                  onClick={() => toggleDimension(domainDimensionKey)}
                                 >
                                   <div className="flex items-center justify-between">
-                                    <div>
-                                      <h4 className="font-semibold text-gray-900">{dimension}</h4>
-                                      <p className="text-sm text-gray-600 mt-1">
-                                        {CONTENT_DIMENSIONS_INFO[dimension as keyof typeof CONTENT_DIMENSIONS_INFO] || 'Content dimension analysis'}
-                                      </p>
-                                      <p className="text-xs text-gray-500 mt-1">
-                                        {snippetCount} snippets • {totalFrequency} total frequency
-                                      </p>
+                                    <div className="flex items-center space-x-3">
+                                      <div className="p-2 bg-blue-100 rounded-lg">
+                                        <Globe className="w-4 h-4 text-blue-600" />
+                                      </div>
+                                      <div>
+                                        <h4 className="font-semibold text-gray-900">{domain}</h4>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                          {sentences.length} sentences{!isOldFormat && ` • Visibility: ${(visibility * 100).toFixed(1)}%`}
+                                          {isOldFormat && ' • Legacy format (no visibility data)'}
+                                        </p>
+                                      </div>
                                     </div>
-                                    {isDimensionExpanded ? (
+                                    {isDomainExpanded ? (
                                       <ChevronDown className="w-4 h-4 text-gray-400" />
                                     ) : (
                                       <ChevronRight className="w-4 h-4 text-gray-400" />
@@ -385,24 +531,28 @@ export default function FullWebContentPage() {
                                   </div>
                                 </div>
 
-                                {/* Dimension Content */}
-                                {isDimensionExpanded && (
+                                {/* Sentences Content */}
+                                {isDomainExpanded && (
                                   <div className="p-4">
                                     <div className="space-y-2">
-                                      {Object.entries(snippets)
-                                        .sort(([,a], [,b]) => b - a) // Sort by frequency descending
-                                        .map(([snippet, frequency]) => (
-                                        <div key={snippet} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                                          <div className="flex-1 mr-4">
-                                            <p className="text-sm text-gray-900">{snippet}</p>
-                                          </div>
-                                          <div className="flex-shrink-0">
-                                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                                              {frequency}x
-                                            </span>
-                                          </div>
+                                      {sentences.map((sentence, index) => (
+                                        <div key={index} className="p-3 bg-gray-50 rounded-lg">
+                                          <p className="text-sm text-gray-900">{sentence}</p>
                                         </div>
                                       ))}
+                                      {sentences.length === 0 && !isOldFormat && visibility > 0 && (
+                                        <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200">
+                                          <p className="text-sm text-yellow-700">
+                                            No sentences from web content, but has visibility: {(visibility * 100).toFixed(1)}% 
+                                            (calculated from agent recommendation data)
+                                          </p>
+                                        </div>
+                                      )}
+                                      {sentences.length === 0 && (isOldFormat || visibility === 0) && (
+                                        <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+                                          <p className="text-sm text-gray-700">No sentences found for this domain</p>
+                                        </div>
+                                      )}
                                     </div>
                                   </div>
                                 )}

@@ -185,19 +185,27 @@ npm run generate-data-table google-ai https://apple.com
 
 ### 3. Analyze Web Content
 
-Perform comprehensive web content analysis across 25+ major websites to understand brand perception and content dimensions.
+Perform comprehensive web content analysis using Google search results to understand brand perception across 15 content dimensions.
 
 ```bash
-# Analyze web content for a brand
-npm run analyze-web-content https://apple.com
+# Analyze web content for multiple brands
+npm run analyze-web-content https://apple.com https://microsoft.com
 
 # Example with other brands
-npm run analyze-web-content https://tesla.com
-npm run analyze-web-content https://nike.com
+npm run analyze-web-content https://tesla.com https://nike.com https://spotify.com
 ```
 
-**Configuration Variables:**
-- `NUMBER_OF_SAMPLED_PROMPTS`: Number of prompts to sample for analysis (default: 5)
+**Required Environment Variables:**
+- `SERPAPI_KEY`: SerpApi key for Google search functionality  
+- `FIRECRAWL_API_KEY`: Firecrawl API key for web scraping
+- `OPENROUTER_API_KEY`: OpenRouter API key for LLM content analysis (supports multiple AI models)
+
+**What it does:**
+- Extracts brand names from provided URLs
+- Searches Google for each brand (top 100 organic results)
+- Scrapes page summaries using Firecrawl API
+- Analyzes content with AI models (via OpenRouter) across 15 dimensions
+- Stores results in new data structure: `{dimension: {domain: [sentences]}}`
 
 **Target Websites (25 sites):**
 - News & Media: Wikipedia, Google Blog, NY Times, Forbes, Washington Post

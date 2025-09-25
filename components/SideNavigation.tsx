@@ -87,6 +87,12 @@ const geoSubNavItems = [
     description: 'Web content analysis'
   },
   {
+    name: 'Agent Recommendation',
+    href: '/geo/agent-recommendation-content',
+    icon: Bot,
+    description: 'AI agent recommendations'
+  },
+  {
     name: 'GEO Result',
     href: '/optimize',
     icon: BarChart3,

@@ -39,8 +39,19 @@ export async function GET(request: NextRequest) {
 
     console.log(`🔍 Looking for web content analysis for: ${brandUrl}`)
     
-    // Find analysis by brand URL
-    const analysis = await FullWebContentCache.findByBrandUrl(brandUrl)
+    // Normalize the brand URL for consistent searching
+    const normalizedBrandUrl = normalizeUrl(brandUrl)
+    console.log(`🔍 Searching for normalized URL: ${normalizedBrandUrl}`)
+    
+    // Find analysis by normalized brand URL first, then fall back to original brandUrl
+    let analysis = await FullWebContentCache.findByBrandUrl(normalizedBrandUrl)
+    
+    if (!analysis) {
+      console.log(`🔄 No match with normalized URL, trying original brandUrl: ${brandUrl}`)
+      // Fall back to searching by original brandUrl for backward compatibility
+      const collection = await FullWebContentCache.getCollectionInstance()
+      analysis = await collection.findOne({ brandUrl })
+    }
     
     if (!analysis) {
       console.log(`❌ No web content analysis found for: ${brandUrl}`)
@@ -51,18 +62,28 @@ export async function GET(request: NextRequest) {
     }
 
     console.log(`✅ Found web content analysis for: ${brandUrl}`)
-    console.log(`📊 Analysis contains ${Object.keys(analysis.websiteContent).length} websites`)
+    console.log(`📊 Analysis contains ${Object.keys(analysis.websiteContent).length} dimensions`)
     
-    // Calculate some statistics for logging
-    const totalWebsites = Object.keys(analysis.websiteContent).length
-    const totalDimensions = new Set(
-      Object.values(analysis.websiteContent).flatMap(site => Object.keys(site))
+    // Calculate some statistics for logging (with backward compatibility)
+    const totalDomains = new Set(
+      Object.values(analysis.websiteContent).flatMap(dimensionContent => Object.keys(dimensionContent))
     ).size
-    const totalSnippets = Object.values(analysis.websiteContent).reduce((sum, site) => 
-      sum + Object.values(site).reduce((dimSum, dim) => 
-        dimSum + Object.keys(dim).length, 0), 0)
+    
+    const totalSnippets = Object.values(analysis.websiteContent).reduce((sum, dimensionContent) => 
+      sum + Object.values(dimensionContent).reduce((dimSum, domainData) => {
+        // Backward compatibility: handle both old (string[]) and new ({sentences: [], visibility: number}) formats
+        if (Array.isArray(domainData)) {
+          return dimSum + domainData.length
+        } else {
+          return dimSum + (domainData.sentences?.length || 0)
+        }
+      }, 0), 0)
+    
+    const dimensionsWithContent = Object.keys(analysis.websiteContent).filter(
+      dimension => Object.keys(analysis.websiteContent[dimension]).length > 0
+    ).length
 
-    console.log(`📈 Analysis stats: ${totalWebsites} websites, ${totalDimensions} dimensions, ${totalSnippets} snippets`)
+    console.log(`📈 Analysis stats: ${totalDomains} domains, ${dimensionsWithContent} dimensions, ${totalSnippets} snippets`)
 
     return NextResponse.json({
       success: true,

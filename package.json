@@ -9,10 +9,13 @@
     "lint": "next lint",
     "generate-prompts": "tsx scripts/generate-prompts.ts",
     "generate-data-table": "tsx scripts/generate-data-table.ts",
-    "analyze-web-content": "tsx scripts/analyze-web-content.ts"
+    "analyze-web-content": "tsx scripts/analyze-web-content.ts",
+    "analyze-agent-recommendation": "tsx scripts/analyze-agent-recommendation.ts",
+    "measure-visibility-for-web-content": "tsx scripts/measure-visibility-for-web-content.ts"
   },
   "dependencies": {
     "@heroicons/react": "^2.0.18",
+    "@mendable/firecrawl-js": "^4.3.5",
     "@next-auth/mongodb-adapter": "^1.1.3",
     "@tailwindcss/typography": "^0.5.16",
     "@types/puppeteer": "^5.4.7",
