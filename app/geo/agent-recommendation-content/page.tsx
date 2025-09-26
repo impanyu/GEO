@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useSession } from 'next-auth/react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Search, Bot, Calendar, BarChart3, Download, Eye, EyeOff, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
+import { Search, Bot, Calendar, BarChart3, Download, Eye, EyeOff, ChevronDown, ChevronRight, RefreshCw, Globe } from 'lucide-react'
 import { useNavigation } from '@/contexts/NavigationContext'
 import SideNavigation from '@/components/SideNavigation'
 import LoadingSpinner from '@/components/LoadingSpinner'
@@ -36,6 +36,13 @@ interface ApiResponse {
   message?: string
 }
 
+interface AllAgentRecommendationResponse {
+  success: boolean
+  data?: AgentRecommendationContentDocument[]
+  error?: string
+  total?: number
+}
+
 // Content dimensions with descriptions for better understanding
 const CONTENT_DIMENSIONS_INFO = {
   'Functionality': 'What the product or brand does. Its core functions, features, what problem it solves.',
@@ -63,24 +70,58 @@ export default function AgentRecommendationContentPage() {
   
   const [url, setUrl] = useState('')
   const [analysis, setAnalysis] = useState<AgentRecommendationContentDocument | null>(null)
+  const [availableAnalyses, setAvailableAnalyses] = useState<AgentRecommendationContentDocument[]>([])
   const [isLoading, setIsLoading] = useState(false)
+  const [isLoadingList, setIsLoadingList] = useState(false)
   const [error, setError] = useState('')
-  const [expandedDomains, setExpandedDomains] = useState<{ [domain: string]: boolean }>({})
+  const [expandedWebsites, setExpandedWebsites] = useState<{ [website: string]: boolean }>({})
   const [expandedDimensions, setExpandedDimensions] = useState<{ [key: string]: boolean }>({})
+  const [selectedBrandUrl, setSelectedBrandUrl] = useState<string>('')
 
   // Handle authentication loading
   if (status === 'loading') {
     return <LoadingSpinner />
   }
 
-  // Load analysis from URL parameter on mount
+  // Load available analyses on component mount
   useEffect(() => {
+    loadAvailableAnalyses()
+    
+    // Check if there's a brandUrl parameter in the URL
     const urlParam = searchParams.get('brandUrl')
     if (urlParam) {
-      setUrl(urlParam)
+      setSelectedBrandUrl(urlParam)
       loadAnalysisForBrand(urlParam)
     }
   }, [searchParams])
+
+  const loadAvailableAnalyses = async () => {
+    setIsLoadingList(true)
+    try {
+      console.log('🔄 Loading available agent recommendation analyses...')
+      
+      const response = await fetch('/api/get_all_agent_recommendation_content')
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+
+      const data: AllAgentRecommendationResponse = await response.json()
+      
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to fetch analyses')
+      }
+
+      console.log(`✅ Loaded ${data.data?.length || 0} agent recommendation analyses`)
+      setAvailableAnalyses(data.data || [])
+      
+    } catch (error) {
+      console.error('❌ Error loading agent recommendation analyses:', error)
+      setError(error instanceof Error ? error.message : 'Failed to load analyses')
+    } finally {
+      setIsLoadingList(false)
+    }
+  }
 
   const loadAnalysisForBrand = async (brandUrl: string) => {
     setIsLoading(true)
@@ -144,37 +185,27 @@ export default function AgentRecommendationContentPage() {
     await loadAnalysisForBrand(url.trim())
   }
 
-  const toggleDomain = (domain: string) => {
-    setExpandedDomains(prev => ({
+  const handleBrandSelect = (brandUrl: string) => {
+    setSelectedBrandUrl(brandUrl)
+    setUrl(brandUrl)
+    loadAnalysisForBrand(brandUrl)
+  }
+
+  const toggleWebsite = (website: string) => {
+    setExpandedWebsites(prev => ({
       ...prev,
-      [domain]: !prev[domain]
+      [website]: !prev[website]
     }))
   }
 
-  const toggleDimension = (dimension: string) => {
+  const toggleDimension = (websiteDimensionKey: string) => {
     setExpandedDimensions(prev => ({
       ...prev,
-      [dimension]: !prev[dimension]
+      [websiteDimensionKey]: !prev[websiteDimensionKey]
     }))
   }
 
-  const getSummaryStats = (analysis: AgentRecommendationContentDocument) => {
-    const totalDomains = new Set(
-      Object.values(analysis.websiteContent).flatMap(dimensionContent => Object.keys(dimensionContent))
-    ).size
-    
-    const totalSnippets = Object.values(analysis.websiteContent).reduce((sum, dimensionContent) => 
-      sum + Object.values(dimensionContent).reduce((dimSum, snippets) => 
-        dimSum + snippets.length, 0), 0)
-    
-    const dimensionsWithContent = Object.keys(analysis.websiteContent).filter(
-      dimension => Object.keys(analysis.websiteContent[dimension]).length > 0
-    ).length
-
-    return { totalDomains, totalSnippets, dimensionsWithContent }
-  }
-
-  const downloadAnalysis = () => {
+  const downloadData = () => {
     if (!analysis) return
     
     const dataStr = JSON.stringify(analysis, null, 2)
@@ -189,251 +220,368 @@ export default function AgentRecommendationContentPage() {
     URL.revokeObjectURL(url)
   }
 
-  // Redirect to signin if not authenticated
-  if (!session) {
-    router.push('/auth/signin')
-    return <LoadingSpinner />
+  // Calculate summary statistics
+  const getSummaryStats = () => {
+    if (!analysis) return null
+    
+    const allDomains = new Set<string>()
+    const allDimensions = new Set<string>()
+    let totalSnippets = 0
+    
+    // Structure: dimension -> {domain -> snippets[]}
+    Object.entries(analysis.websiteContent).forEach(([dimension, domains]) => {
+      allDimensions.add(dimension)
+      Object.entries(domains).forEach(([domain, snippetsData]) => {
+        allDomains.add(domain)
+        // Ensure snippets is an array before calling .length
+        const snippets = Array.isArray(snippetsData) ? snippetsData : []
+        totalSnippets += snippets.length
+        
+        // Debug logging for data structure issues
+        if (!Array.isArray(snippetsData) && snippetsData !== undefined) {
+          console.log(`⚠️ Unexpected snippets data in getSummaryStats for ${domain}:`, typeof snippetsData, snippetsData)
+        }
+      })
+    })
+    
+    return {
+      totalWebsites: allDomains.size,
+      totalDimensions: allDimensions.size,
+      totalSnippets: totalSnippets,
+      dimensions: Array.from(allDimensions)
+    }
   }
 
+  const summaryStats = getSummaryStats()
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="flex">
-        <SideNavigation />
-        
+    <div className="min-h-screen bg-gray-50 flex">
+      <SideNavigation />
+      <div className={`flex-1 transition-all duration-300 ${isCollapsed ? 'ml-16' : 'ml-64'}`}>
         {/* Header */}
-        <header className={`bg-white shadow-sm border-b transition-all duration-300 ${isCollapsed ? 'ml-16' : 'ml-64'}`}>
-          <div className="px-6 py-4">
-            <div className="flex items-center justify-between">
+        <header className="bg-white border-b border-gray-200">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex items-center space-x-3 py-6">
+              <div className="p-3 bg-gradient-to-br from-purple-500 to-blue-600 rounded-xl">
+                <Bot className="w-8 h-8 text-white" />
+              </div>
               <div>
-                <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
-                  <Bot className="w-8 h-8 text-purple-600" />
-                  Agent Recommendation Content
-                </h1>
-                <p className="text-gray-600 mt-1">
-                  Analyze AI agent recommendations and content insights for brands
-                </p>
+                <h1 className="text-3xl font-bold text-gray-900">Agent Recommendation Content</h1>
+                <p className="text-gray-600 mt-1">AI agent recommendations and content insights across 15 content dimensions</p>
               </div>
             </div>
           </div>
         </header>
 
         {/* Main Content */}
-        <main className={`flex-1 transition-all duration-300 ${isCollapsed ? 'ml-16' : 'ml-64'}`}>
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-            {/* URL Input Form */}
-            <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
-              <h2 className="text-lg font-bold text-gray-900 mb-4">Search Agent Recommendation Content</h2>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
-                  <label htmlFor="url" className="block text-sm font-medium text-gray-700 mb-2">
-                    Brand URL
-                  </label>
-                  <div className="flex space-x-3">
-                    <div className="flex-1">
-                      <input
-                        type="url"
-                        id="url"
-                        value={url}
-                        onChange={(e) => setUrl(e.target.value)}
-                        placeholder="https://example.com"
-                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm"
-                        disabled={isLoading}
-                      />
-                    </div>
-                    <button
-                      type="submit"
-                      disabled={isLoading}
-                      className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-lg hover:from-purple-700 hover:to-blue-700 focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2 transition-all duration-200"
-                    >
-                      {isLoading ? (
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                      ) : (
-                        <Search className="w-4 h-4" />
-                      )}
-                      <span>{isLoading ? 'Loading...' : 'Get Analysis'}</span>
-                    </button>
-                  </div>
-                </div>
-                
-                {error && (
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                    <p className="text-red-700 text-sm">{error}</p>
-                  </div>
-                )}
-              </form>
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          {/* Available Analyses Section */}
+          <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-gray-900">Available Analyses</h2>
+              <button
+                onClick={loadAvailableAnalyses}
+                disabled={isLoadingList}
+                className="flex items-center space-x-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors duration-200 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-4 h-4 ${isLoadingList ? 'animate-spin' : ''}`} />
+                <span>Refresh</span>
+              </button>
             </div>
-
-            {/* Analysis Results */}
-            {analysis && (
-              <>
-                {/* Summary Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                  <div className="bg-white rounded-xl shadow-lg p-6">
-                    <div className="flex items-center">
-                      <div className="p-3 bg-purple-100 rounded-lg">
-                        <Bot className="w-6 h-6 text-purple-600" />
+            
+            {isLoadingList ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+                <span className="ml-3 text-gray-600">Loading analyses...</span>
+              </div>
+            ) : availableAnalyses.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {availableAnalyses.map((analysisItem) => (
+                  <div
+                    key={analysisItem._id}
+                    className={`border-2 rounded-lg p-4 cursor-pointer transition-all duration-200 ${
+                      selectedBrandUrl === analysisItem.normalizedBrandUrls[0]
+                        ? 'border-purple-500 bg-purple-50'
+                        : 'border-gray-200 hover:border-purple-300 hover:bg-gray-50'
+                    }`}
+                    onClick={() => handleBrandSelect(analysisItem.normalizedBrandUrls[0])}
+                  >
+                    <div className="flex items-center space-x-3">
+                      <div className="p-2 bg-purple-100 rounded-lg">
+                        <Bot className="w-5 h-5 text-purple-600" />
                       </div>
-                      <div className="ml-4">
-                        <p className="text-sm font-medium text-gray-600">Agent Platform</p>
-                        <p className="text-lg font-bold text-gray-900">{analysis.agentPlatform}</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="bg-white rounded-xl shadow-lg p-6">
-                    <div className="flex items-center">
-                      <div className="p-3 bg-blue-100 rounded-lg">
-                        <BarChart3 className="w-6 h-6 text-blue-600" />
-                      </div>
-                      <div className="ml-4">
-                        <p className="text-sm font-medium text-gray-600">Total Snippets</p>
-                        <p className="text-lg font-bold text-gray-900">{getSummaryStats(analysis).totalSnippets}</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="bg-white rounded-xl shadow-lg p-6">
-                    <div className="flex items-center">
-                      <div className="p-3 bg-green-100 rounded-lg">
-                        <BarChart3 className="w-6 h-6 text-green-600" />
-                      </div>
-                      <div className="ml-4">
-                        <p className="text-sm font-medium text-gray-600">Dimensions</p>
-                        <p className="text-lg font-bold text-gray-900">{getSummaryStats(analysis).dimensionsWithContent}</p>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-semibold text-gray-900 truncate">{analysisItem.brandNames.join(', ')}</h3>
+                        <p className="text-sm text-gray-600 truncate">{analysisItem.agentPlatform}</p>
+                        <p className="text-xs text-gray-500">
+                          {formatDateTime(analysisItem.sampledTime)}
+                        </p>
                       </div>
                     </div>
                   </div>
-
-                  <div className="bg-white rounded-xl shadow-lg p-6">
-                    <div className="flex items-center">
-                      <div className="p-3 bg-orange-100 rounded-lg">
-                        <Calendar className="w-6 h-6 text-orange-600" />
-                      </div>
-                      <div className="ml-4">
-                        <p className="text-sm font-medium text-gray-600">Analyzed</p>
-                        <p className="text-lg font-bold text-gray-900">{formatDateTime(analysis.sampledTime)}</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Analysis Info */}
-                <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-xl font-bold text-gray-900">Analysis Information</h2>
-                    <button
-                      onClick={downloadAnalysis}
-                      className="flex items-center space-x-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors duration-200"
-                    >
-                      <Download className="w-4 h-4" />
-                      <span>Download JSON</span>
-                    </button>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div>
-                      <h3 className="font-semibold text-gray-700 mb-2">Brands Analyzed</h3>
-                      <div className="space-y-1">
-                        {analysis.brandNames.map((brandName, index) => (
-                          <div key={index} className="text-sm text-gray-600">
-                            <span className="font-medium">{brandName}</span>
-                            <br />
-                            <span className="text-xs text-gray-500">{analysis.normalizedBrandUrls[index]}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    
-                    <div>
-                      <h3 className="font-semibold text-gray-700 mb-2">Analysis Scope</h3>
-                      <div className="space-y-1 text-sm text-gray-600">
-                        <div>Total Prompts: <span className="font-medium">{analysis.totalPrompts}</span></div>
-                        <div>Sampled Prompts: <span className="font-medium">{analysis.sampledPrompts}</span></div>
-                        <div>Calls per Prompt: <span className="font-medium">{analysis.callsPerPrompt}</span></div>
-                        <div>Total API Calls: <span className="font-medium">{analysis.sampledPrompts * analysis.callsPerPrompt}</span></div>
-                      </div>
-                    </div>
-                    
-                    <div>
-                      <h3 className="font-semibold text-gray-700 mb-2">Content Stats</h3>
-                      <div className="space-y-1 text-sm text-gray-600">
-                        <div>Domains: <span className="font-medium">{getSummaryStats(analysis).totalDomains}</span></div>
-                        <div>Dimensions: <span className="font-medium">{getSummaryStats(analysis).dimensionsWithContent}</span></div>
-                        <div>Total Snippets: <span className="font-medium">{getSummaryStats(analysis).totalSnippets}</span></div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Content Dimensions */}
-                <div className="bg-white rounded-xl shadow-lg p-6">
-                  <h2 className="text-xl font-bold text-gray-900 mb-6">Content Dimensions Analysis</h2>
-                  
-                  <div className="space-y-4">
-                    {Object.entries(analysis.websiteContent)
-                      .filter(([dimension, content]) => Object.keys(content).length > 0)
-                      .map(([dimension, content]) => (
-                        <div key={dimension} className="border border-gray-200 rounded-lg overflow-hidden">
-                          <button
-                            onClick={() => toggleDimension(dimension)}
-                            className="w-full px-6 py-4 bg-gray-50 hover:bg-gray-100 flex items-center justify-between transition-colors duration-200"
-                          >
-                            <div className="flex items-center space-x-3">
-                              {expandedDimensions[dimension] ? 
-                                <ChevronDown className="w-5 h-5 text-gray-500" /> :
-                                <ChevronRight className="w-5 h-5 text-gray-500" />
-                              }
-                              <div className="text-left">
-                                <h3 className="font-semibold text-gray-900">{dimension}</h3>
-                                <p className="text-sm text-gray-600">
-                                  {Object.keys(content).length} domains, {Object.values(content).reduce((sum, snippets) => sum + snippets.length, 0)} snippets
-                                </p>
-                                <p className="text-xs text-gray-500 mt-1">
-                                  {CONTENT_DIMENSIONS_INFO[dimension as keyof typeof CONTENT_DIMENSIONS_INFO]}
-                                </p>
-                              </div>
-                            </div>
-                          </button>
-                          
-                          {expandedDimensions[dimension] && (
-                            <div className="px-6 py-4 space-y-4">
-                              {Object.entries(content).map(([domain, snippets]) => (
-                                <div key={domain} className="border border-gray-100 rounded-lg overflow-hidden">
-                                  <button
-                                    onClick={() => toggleDomain(`${dimension}-${domain}`)}
-                                    className="w-full px-4 py-3 bg-blue-50 hover:bg-blue-100 flex items-center justify-between transition-colors duration-200"
-                                  >
-                                    <div className="flex items-center space-x-2">
-                                      {expandedDomains[`${dimension}-${domain}`] ? 
-                                        <ChevronDown className="w-4 h-4 text-blue-600" /> :
-                                        <ChevronRight className="w-4 h-4 text-blue-600" />
-                                      }
-                                      <span className="font-medium text-blue-900">{domain}</span>
-                                      <span className="text-sm text-blue-700">({snippets.length} snippets)</span>
-                                    </div>
-                                  </button>
-                                  
-                                  {expandedDomains[`${dimension}-${domain}`] && (
-                                    <div className="px-4 py-3 bg-white space-y-2">
-                                      {snippets.map((snippet, index) => (
-                                        <div key={index} className="p-3 bg-gray-50 rounded-lg border border-gray-200">
-                                          <p className="text-sm text-gray-700">{snippet}</p>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      ))
-                    }
-                  </div>
-                </div>
-              </>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8">
+                <Bot className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">No Analyses Available</h3>
+                <p className="text-gray-600">
+                  Run the analyze-agent-recommendation script to generate agent recommendation data.
+                </p>
+              </div>
             )}
           </div>
+
+          {/* Manual URL Input Form */}
+          <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+            <h2 className="text-lg font-bold text-gray-900 mb-4">Or Search by URL</h2>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label htmlFor="url" className="block text-sm font-medium text-gray-700 mb-2">
+                  Brand URL
+                </label>
+                <div className="flex space-x-3">
+                  <div className="flex-1">
+                    <input
+                      type="url"
+                      id="url"
+                      value={url}
+                      onChange={(e) => setUrl(e.target.value)}
+                      placeholder="https://example.com"
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm"
+                      disabled={isLoading}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={isLoading}
+                    className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-lg hover:from-purple-700 hover:to-blue-700 focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2 transition-all duration-200"
+                  >
+                    {isLoading ? (
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                    ) : (
+                      <Search className="w-4 h-4" />
+                    )}
+                    <span>{isLoading ? 'Loading...' : 'Get Analysis'}</span>
+                  </button>
+                </div>
+              </div>
+              
+              {error && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                  <p className="text-red-700 text-sm">{error}</p>
+                </div>
+              )}
+            </form>
+          </div>
+
+        {/* Analysis Results */}
+        {analysis && (
+          <>
+            {/* Summary Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+              <div className="bg-white rounded-xl shadow-lg p-6">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 bg-purple-100 rounded-lg">
+                    <Bot className="w-5 h-5 text-purple-600" />
+                  </div>
+                  <div>
+                    <div className="text-2xl font-bold text-gray-900">{summaryStats?.totalWebsites || 0}</div>
+                    <div className="text-sm text-gray-600">Domains Analyzed</div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="bg-white rounded-xl shadow-lg p-6">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 bg-blue-100 rounded-lg">
+                    <BarChart3 className="w-5 h-5 text-blue-600" />
+                  </div>
+                  <div>
+                    <div className="text-2xl font-bold text-gray-900">{summaryStats?.totalDimensions || 0}</div>
+                    <div className="text-sm text-gray-600">Content Dimensions</div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="bg-white rounded-xl shadow-lg p-6">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 bg-green-100 rounded-lg">
+                    <Search className="w-5 h-5 text-green-600" />
+                  </div>
+                  <div>
+                    <div className="text-2xl font-bold text-gray-900">{summaryStats?.totalSnippets || 0}</div>
+                    <div className="text-sm text-gray-600">Content Snippets</div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="bg-white rounded-xl shadow-lg p-6">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 bg-orange-100 rounded-lg">
+                    <Calendar className="w-5 h-5 text-orange-600" />
+                  </div>
+                  <div>
+                    <div className="text-lg font-bold text-gray-900">{analysis.brandNames.join(', ')}</div>
+                    <div className="text-sm text-gray-600">Analyzed: {formatDateTime(analysis.sampledTime)}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Controls */}
+            <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-bold text-gray-900">Content Analysis Results</h2>
+                <button
+                  onClick={downloadData}
+                  className="flex items-center space-x-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors duration-200"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Download JSON</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Content Dimensions Display */}
+            <div className="space-y-6">
+              {Object.entries(analysis.websiteContent).map(([dimension, domains]) => {
+                const isDimensionExpanded = expandedDimensions[dimension]
+                const domainCount = Object.keys(domains).length
+                const sentenceCount = Object.values(domains).reduce((sum, snippetsData) => {
+                  // Ensure snippets is always an array
+                  const snippets = Array.isArray(snippetsData) ? snippetsData : []
+                  return sum + snippets.length
+                }, 0)
+                
+                return (
+                  <div key={dimension} className="bg-white rounded-xl shadow-lg overflow-hidden">
+                    {/* Dimension Header */}
+                    <div 
+                      className="p-6 border-b border-gray-200 cursor-pointer hover:bg-gray-50 transition-colors duration-200"
+                      onClick={() => toggleDimension(dimension)}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-3">
+                          <div className="p-2 bg-purple-100 rounded-lg">
+                            <BarChart3 className="w-5 h-5 text-purple-600" />
+                          </div>
+                          <div>
+                            <h3 className="text-lg font-bold text-gray-900">{dimension}</h3>
+                            <p className="text-sm text-gray-600 mt-1">
+                              {CONTENT_DIMENSIONS_INFO[dimension as keyof typeof CONTENT_DIMENSIONS_INFO] || 'Content dimension analysis'}
+                            </p>
+                            <p className="text-xs text-gray-500 mt-1">{domainCount} domains • {sentenceCount} sentences</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          {isDimensionExpanded ? (
+                            <EyeOff className="w-5 h-5 text-gray-400" />
+                          ) : (
+                            <Eye className="w-5 h-5 text-gray-400" />
+                          )}
+                          {isDimensionExpanded ? (
+                            <ChevronDown className="w-5 h-5 text-gray-400" />
+                          ) : (
+                            <ChevronRight className="w-5 h-5 text-gray-400" />
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Domain Content */}
+                    {isDimensionExpanded && (
+                      <div className="p-6">
+                        <div className="space-y-4">
+                          {Object.entries(domains).map(([domain, snippetsData]) => {
+                            const domainDimensionKey = `${dimension}-${domain}`
+                            const isDomainExpanded = expandedDimensions[domainDimensionKey]
+                            
+                            // Ensure snippets is always an array
+                            const snippets = Array.isArray(snippetsData) ? snippetsData : []
+                            
+                            // Debug logging for data structure issues
+                            if (!Array.isArray(snippetsData) && snippetsData !== undefined) {
+                              console.log(`⚠️ Unexpected snippets data for ${domain}:`, typeof snippetsData, snippetsData)
+                            }
+                            
+                            return (
+                              <div key={domain} className="border border-gray-200 rounded-lg overflow-hidden">
+                                {/* Domain Header */}
+                                <div 
+                                  className="p-4 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors duration-200"
+                                  onClick={() => toggleDimension(domainDimensionKey)}
+                                >
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center space-x-3">
+                                      <div className="p-2 bg-blue-100 rounded-lg">
+                                        <Globe className="w-4 h-4 text-blue-600" />
+                                      </div>
+                                      <div>
+                                        <h4 className="font-semibold text-gray-900">{domain}</h4>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                          {snippets.length} sentences
+                                        </p>
+                                      </div>
+                                    </div>
+                                    {isDomainExpanded ? (
+                                      <ChevronDown className="w-4 h-4 text-gray-400" />
+                                    ) : (
+                                      <ChevronRight className="w-4 h-4 text-gray-400" />
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Sentences Content */}
+                                {isDomainExpanded && (
+                                  <div className="p-4">
+                                    <div className="space-y-2">
+                                      {snippets.map((snippet, index) => (
+                                        <div key={index} className="p-3 bg-gray-50 rounded-lg">
+                                          <p className="text-sm text-gray-900">{snippet}</p>
+                                        </div>
+                                      ))}
+                                      {snippets.length === 0 && (
+                                        <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+                                          <p className="text-sm text-gray-700">No sentences found for this domain</p>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            {Object.keys(analysis.websiteContent).length === 0 && (
+              <div className="bg-white rounded-xl shadow-lg p-12 text-center">
+                <Bot className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">No Content Found</h3>
+                <p className="text-gray-600">
+                  The analysis exists but contains no agent recommendation content data.
+                </p>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Empty State */}
+        {!analysis && !isLoading && (
+          <div className="bg-white rounded-xl shadow-lg p-12 text-center">
+            <Bot className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">Enter a Brand URL</h3>
+            <p className="text-gray-600">
+              Enter a brand URL above to view AI agent recommendations across 15 content dimensions.
+            </p>
+          </div>
+        )}
         </main>
       </div>
     </div>

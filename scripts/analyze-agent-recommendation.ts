@@ -12,10 +12,11 @@ import {
 } from '../lib/models/AgentRecommendationContentCache'
 import { normalizeUrl } from '../lib/models/PromptCache'
 import OpenAI from 'openai'
+import FirecrawlApp from '@mendable/firecrawl-js'
 
 // Configuration constants
 const SAMPLED_PROMPTS_NUM = 300
-const CALLS_PER_PROMPT = 2
+const CALLS_PER_PROMPT = 1
 
 // 15 Content Dimensions for Brand Analysis (same as analyze-web-content.ts)
 const CONTENT_DIMENSIONS = [
@@ -76,6 +77,7 @@ interface Annotation {
   url?: string
   start_index?: number
   end_index?: number
+  content?: string // Additional content from OpenRouter's url_citation
 }
 
 interface AgentResponse {
@@ -83,21 +85,26 @@ interface AgentResponse {
   annotations: Annotation[]
 }
 
-// Initialize OpenAI client (using OpenRouter)
+// Initialize OpenAI client (native OpenAI)
 let openai: OpenAI
+let firecrawlApp: FirecrawlApp
 
 function getOpenAI(): OpenAI {
   if (!openai) {
     openai = new OpenAI({
-      baseURL: "https://openrouter.ai/api/v1",
-      apiKey: process.env.OPENROUTER_API_KEY,
-      defaultHeaders: {
-        "HTTP-Referer": "https://github.com/your-repo", // Optional: for OpenRouter rankings
-        "X-Title": "GEO Agent Recommendation Analysis Tool", // Optional: for OpenRouter rankings
-      }
+      apiKey: process.env.OPENAI_API_KEY
     })
   }
   return openai
+}
+
+function getFirecrawl(): FirecrawlApp {
+  if (!firecrawlApp) {
+    firecrawlApp = new FirecrawlApp({
+      apiKey: process.env.FIRECRAWL_API_KEY
+    })
+  }
+  return firecrawlApp
 }
 
 /**
@@ -109,6 +116,61 @@ function extractDomainFromUrl(url: string): string {
     return `${urlObj.protocol}//${urlObj.hostname}`
   } catch {
     return url
+  }
+}
+
+/**
+ * Scrape page content using Firecrawl library
+ */
+async function scrapePageWithFirecrawl(url: string, brandNames: string[]): Promise<string> {
+  try {
+    if (!process.env.FIRECRAWL_API_KEY) {
+      throw new Error('FIRECRAWL_API_KEY not configured')
+    }
+
+    console.log(`    🔥 Scraping: ${url}`)
+
+    const firecrawl = getFirecrawl()
+    const brandContext = brandNames.length > 0 ? brandNames.join(', ') : 'the brands'
+    
+    // Use the library to scrape with multiple formats
+    const result = await firecrawl.scrape(url, {
+      formats: [
+        'summary',
+        {
+          type: 'json',
+          prompt: `Extract a comprehensive summary of the page content, specifically focusing on information about "${brandContext}" and related products or services. Include key details about features, benefits, company information, pricing, reviews, and any brand-related content. Prioritize content that mentions or relates to ${brandContext}.`
+        }
+      ]
+    })
+    
+    let summary = ''
+    
+    // Try to get summary from the response
+    if (result.summary && typeof result.summary === 'string') {
+      summary = result.summary
+      console.log(`    ✅ Scraped successfully using summary (${summary.length} chars)`)
+    }
+    // Try to get from JSON response
+    else if (result.json && typeof result.json === 'object') {
+      summary = (result.json as any).summary || JSON.stringify(result.json)
+      console.log(`    ✅ Scraped successfully using JSON object (${summary.length} chars)`)
+    }
+    // Fallback to markdown
+    else if (result.markdown && typeof result.markdown === 'string') {
+      summary = result.markdown
+      console.log(`    ✅ Scraped successfully using markdown (${summary.length} chars)`)
+    }
+    else {
+      console.log(`    ⚠️ No content found in Firecrawl response`)
+      return ''
+    }
+    
+    return summary.trim()
+    
+  } catch (error) {
+    console.log(`    ❌ Firecrawl error: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    return ''
   }
 }
 
@@ -138,144 +200,226 @@ async function getPromptSet(brandUrl: string): Promise<GeneratePromptSetResponse
 }
 
 /**
- * Call OpenRouter API with web search enabled
+ * Call OpenAI with web search tool and return output_text and annotations
  */
-async function callOpenRouterWithWebSearch(prompt: string, platform: AgentPlatform = 'openai'): Promise<AgentResponse> {
-  try {
-    console.log(`🔍 Making OpenRouter call with web search for: "${prompt.substring(0, 50)}..."`)
-    
-    const modelName = platform === 'openai' ? 'openai/gpt-4o' : 'openai/gpt-4o'
-    
-    // Create the request body with web search enabled
-    const requestBody = {
-      model: modelName,
-      messages: [
-        {
-          role: 'user',
-          content: `Please search the web and provide comprehensive information about: ${prompt}`
-        }
-      ],
-      temperature: 0.1,
-      tools: [
-        {
-          type: 'web_search' as any,
-          search_results_count: 10
-        }
-      ],
-      tool_choice: 'auto' as any
-    }
-
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://github.com/your-repo',
-        'X-Title': 'GEO Agent Recommendation Analysis Tool'
-      },
-      body: JSON.stringify(requestBody)
-    })
-
-    if (!response.ok) {
-      throw new Error(`OpenRouter API error: ${response.status} ${response.statusText}`)
-    }
-
-    const data = await response.json()
-    
-    const content = data.choices?.[0]?.message?.content || ''
-    
-    // Extract annotations/citations from tool calls or response metadata
-    let annotations: Annotation[] = []
-    
-    // Check for tool calls that might contain web search results
-    const toolCalls = data.choices?.[0]?.message?.tool_calls || []
-    
-    for (const toolCall of toolCalls) {
-      if (toolCall.type === 'web_search' && toolCall.function?.arguments) {
+async function callOpenAIWithWebSearch(prompt: string, retries: number = 3): Promise<AgentResponse> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      if (attempt > 1) {
+        const waitTime = Math.min(1000 * Math.pow(2, attempt - 1), 10000) // Exponential backoff, max 10s
+        console.log(`    ⏳ Retry attempt ${attempt}/${retries} after ${waitTime}ms...`)
+        await new Promise(resolve => setTimeout(resolve, waitTime))
+      }
+      
+      console.log(`🔍 Making OpenAI call with web search for: "${prompt.substring(0, 50)}..."`)
+      
+      // Try multiple approaches for web search
+      let response;
+      let searchMethod = 'unknown';
+      
+      try {
+        // Method 1: Force web search with tool_choice
+        searchMethod = 'forced web_search_preview';
+        response = await getOpenAI().responses.create({
+          model: 'gpt-4o',
+          tools: [{ 
+            type: 'web_search_preview',
+            search_context_size: 'high'
+          }],
+          tool_choice: 'required',  // Force tool usage
+          input: `Please search the web for current information about: ${prompt}`
+        })
+      } catch (forcedError) {
+        console.log('⚠️ Forced web search failed, trying without force:', forcedError instanceof Error ? forcedError.message : 'Unknown error')
+        
         try {
-          const searchResults = JSON.parse(toolCall.function.arguments)
-          if (searchResults.results && Array.isArray(searchResults.results)) {
-            searchResults.results.forEach((result: any, index: number) => {
-              if (result.url && result.title) {
-                annotations.push({
-                  type: 'web_search_result',
-                  title: result.title,
-                  url: result.url,
-                  start_index: index * 100, // Approximate position
-                  end_index: (index + 1) * 100 - 1
-                })
-              }
-            })
-          }
-        } catch (parseError) {
-          console.log('⚠️ Could not parse tool call arguments')
+          // Method 2: Try without forcing tool usage
+          searchMethod = 'optional web_search_preview';
+          response = await getOpenAI().responses.create({
+            model: 'gpt-4o',
+            tools: [{ 
+              type: 'web_search_preview',
+              search_context_size: 'high'
+            }],
+            input: `Please search the web for current information about: ${prompt}`
+          })
+        } catch (optionalError) {
+          console.log('⚠️ Optional web search failed, trying basic web_search:', optionalError instanceof Error ? optionalError.message : 'Unknown error')
+          
+          // Method 3: Try basic web_search
+          searchMethod = 'basic web_search';
+          response = await getOpenAI().responses.create({
+            model: 'gpt-4o',
+            tools: [{ 
+              type: 'web_search'
+            }],
+            input: `Please search the web for current information about: ${prompt}`
+          })
         }
       }
+      
+      console.log(`🎯 OpenAI Responses API successful using: ${searchMethod}`)
+      
+      // Extract output_text
+      const output_text = (response as any).output_text || ''
+      console.log('Response length:', output_text.length)
+      console.log('Output text sample:', output_text.substring(0, 200) + '...')
+      
+      // Extract annotations from the response
+      let annotations: Annotation[] = []
+      
+      try {
+        const responseData = response as any
+        console.log('Attempting to extract annotations...')
+        
+        // Try multiple possible locations for annotations
+        if (responseData.output && Array.isArray(responseData.output)) {
+          console.log('Found output array with', responseData.output.length, 'items')
+          for (const outputItem of responseData.output) {
+            console.log('Output item type:', outputItem.type)
+            if (outputItem.content && Array.isArray(outputItem.content)) {
+              console.log('Found content array with', outputItem.content.length, 'items')
+              for (const contentItem of outputItem.content) {
+                console.log('Content item:', JSON.stringify(contentItem, null, 2))
+                if (contentItem.annotations && Array.isArray(contentItem.annotations)) {
+                  console.log('Found annotations:', contentItem.annotations.length)
+                  annotations.push(...contentItem.annotations)
+                }
+              }
+            }
+          }
+        }
+        
+        // Also check if annotations are directly in the response
+        if (responseData.annotations && Array.isArray(responseData.annotations)) {
+          console.log('Found direct annotations:', responseData.annotations.length)
+          annotations.push(...responseData.annotations)
+        }
+        
+        // Check if there are any web search results or citations
+        if (responseData.web_search_results) {
+          console.log('Found web_search_results:', JSON.stringify(responseData.web_search_results, null, 2))
+        }
+        
+        // Check if web search was actually performed
+        const hasWebSearchActivity = responseData.output?.some((item: any) => 
+          item.type === 'web_search_call' || 
+          item.type === 'web_search' ||
+          (item.content && item.content.some((content: any) => content.type === 'web_search'))
+        )
+        
+        console.log('🌐 Web search activity detected:', hasWebSearchActivity)
+        
+        // Analyze response text for signs of web search
+        const hasCurrentInfo = output_text.includes('2024') || 
+                              output_text.includes('2025') || 
+                              output_text.includes('recently') ||
+                              output_text.includes('currently') ||
+                              output_text.includes('latest') ||
+                              output_text.includes('http') ||
+                              output_text.includes('www.')
+        
+        console.log('📊 Response appears to contain current/web info:', hasCurrentInfo)
+        
+        // Warning if no web search detected
+        if (!hasWebSearchActivity && !hasCurrentInfo) {
+          console.log('⚠️ WARNING: No evidence of web search activity - response may be from training data only')
+        }
+          
+      } catch (annotationError) {
+        console.log('⚠️ Could not extract annotations:', annotationError)
+      }
+      
+      console.log(`Extracted ${annotations.length} annotations`)
+      if (annotations.length > 0) {
+        console.log('Sample annotation:', JSON.stringify(annotations[0], null, 2))
+      }
+      
+      return {
+        content: output_text,
+        annotations
+      }
+      
+    } catch (error) {
+      console.error(`Error calling OpenAI (attempt ${attempt}/${retries}):`, error)
+      
+      if (attempt === retries) {
+        throw new Error(`OpenAI API error after ${retries} attempts: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      }
+      
+      // Log retry info
+      console.log(`⚠️ Attempt ${attempt} failed, will retry...`)
     }
-    
-    // Also check for citations in the response metadata
-    if (data.citations && Array.isArray(data.citations)) {
-      data.citations.forEach((citation: any) => {
-        annotations.push({
-          type: 'citation',
-          title: citation.title || citation.url,
-          url: citation.url,
-          start_index: citation.start_index || 0,
-          end_index: citation.end_index || content.length
-        })
-      })
-    }
-    
-    console.log(`✅ OpenRouter call successful, content length: ${content.length}, annotations: ${annotations.length}`)
-    
-    return {
-      content,
-      annotations
-    }
-  } catch (error) {
-    console.error('Error calling OpenRouter:', error)
-    throw new Error(`OpenRouter API error: ${error instanceof Error ? error.message : 'Unknown error'}`)
   }
+  
+  // This should never be reached due to the throw above
+  throw new Error('Unexpected error in OpenAI web search')
 }
 
 /**
- * Extract annotated snippets from content based on annotations
+ * Extract summaries from annotation URLs using Firecrawl
  */
-function extractAnnotatedSnippets(content: string, annotations: Annotation[]): { [domain: string]: string[] } {
-  const snippetsByDomain: { [domain: string]: string[] } = {}
+async function extractSummariesFromAnnotations(annotations: Annotation[], brandNames: string[]): Promise<{ [domain: string]: string }> {
+  const summariesByDomain: { [domain: string]: string } = {}
+  const processedUrls = new Set<string>()
+  
+  console.log(`    📄 Processing ${annotations.length} annotations with Firecrawl...`)
   
   for (const annotation of annotations) {
-    if (annotation.url && annotation.start_index !== undefined && annotation.end_index !== undefined) {
+    if (annotation.url) {
       try {
-        // Extract snippet from content
-        const snippet = content.substring(annotation.start_index, annotation.end_index).trim()
+        // Skip if we've already processed this exact URL
+        if (processedUrls.has(annotation.url)) {
+          console.log(`    🔄 Skipping already processed URL: ${annotation.url}`)
+          continue
+        }
         
-        if (snippet.length > 0) {
-          // Extract and normalize domain from annotation URL
-          const domainUrl = extractDomainFromUrl(annotation.url)
-          const normalizedDomain = normalizeUrl(domainUrl)
-          
-          if (!snippetsByDomain[normalizedDomain]) {
-            snippetsByDomain[normalizedDomain] = []
+        // Extract and normalize domain from annotation URL
+        const domainUrl = extractDomainFromUrl(annotation.url)
+        const normalizedDomain = normalizeUrl(domainUrl)
+        
+        console.log(`    🔗 Processing URL: ${annotation.url}`)
+        console.log(`    📋 Title: ${annotation.title || 'No title'}`)
+        
+        // Mark this URL as processed
+        processedUrls.add(annotation.url)
+        
+        // Scrape the URL to get summary content
+        const summary = await scrapePageWithFirecrawl(annotation.url, brandNames)
+        
+        if (summary && summary.length > 0) {
+          // Store summary for this domain (merge if domain already exists)
+          if (!summariesByDomain[normalizedDomain]) {
+            summariesByDomain[normalizedDomain] = summary
+          } else {
+            // Append to existing summary with separator
+            summariesByDomain[normalizedDomain] += '\n\n' + summary
           }
           
-          snippetsByDomain[normalizedDomain].push(snippet)
+          console.log(`    ✅ Added summary for ${normalizedDomain} (${summary.length} chars)`)
+        } else {
+          console.log(`    ⚠️ No summary extracted for ${normalizedDomain}`)
         }
+        
+        // Rate limiting - small delay between Firecrawl requests
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        
       } catch (error) {
-        console.log(`⚠️ Error extracting snippet for annotation: ${error}`)
+        console.log(`    ❌ Error processing annotation: ${error instanceof Error ? error.message : 'Unknown error'}`)
       }
     }
   }
   
-  return snippetsByDomain
+  console.log(`    📊 Extracted summaries from ${Object.keys(summariesByDomain).length} domains (${processedUrls.size} unique URLs processed)`)
+  return summariesByDomain
 }
 
 /**
- * Categorize snippets into content dimensions using OpenRouter/OpenAI
+ * Categorize summary content into dimensions by decomposing into sentences
  */
-async function categorizeSnippetsWithGPT(snippets: string[], brandNames: string[]): Promise<{ [dimension: string]: string[] }> {
+async function categorizeSummaryWithGPT(summary: string, brandNames: string[]): Promise<{ [dimension: string]: string[] }> {
   try {
-    if (!snippets || snippets.length === 0) {
+    if (!summary || summary.length === 0) {
       return {}
     }
 
@@ -286,38 +430,38 @@ async function categorizeSnippetsWithGPT(snippets: string[], brandNames: string[
     const brandContext = brandNames.length > 0 ? `about "${brandNames.join(', ')}"` : ''
 
     const prompt = `
-Analyze the following content snippets ${brandContext} and categorize each snippet into ONE of these 15 content dimensions.
+You are analyzing content ${brandContext} and need to decompose it into sentences and categorize each sentence into content dimensions.
 
 CONTENT DIMENSIONS:
 ${dimensionsList}
 
 CRITICAL INSTRUCTIONS:
-1. Process each snippet EXACTLY ONCE - no snippet should appear multiple times in the output
-2. For each snippet, determine which ONE dimension it belongs to most closely
-3. Each snippet should be assigned to exactly ONE dimension only
-4. Skip snippets that don't contain meaningful brand/product information
-5. Do NOT duplicate any snippets across different dimensions
-6. Do NOT include the same snippet multiple times in any dimension
-7. Return ONLY a JSON object with each snippet appearing exactly once across all dimensions
+1. First, decompose the provided summary into individual meaningful sentences
+2. Each sentence should be at least 10 words long and contain meaningful information
+3. Skip sentences that are just navigation, headers, or non-content text
+4. For each sentence, assign it to the ONE most relevant dimension
+5. If a sentence doesn't fit any dimension well, place it in the closest match
+6. Each sentence should appear in the output exactly once
+7. Do NOT create new content - only use sentences from the provided summary
 
-Expected JSON format:
+CONTENT SUMMARY TO ANALYZE:
+${summary}
+
+Return a JSON object where sentences are categorized by dimension:
 {
-  "Functionality": ["unique snippet 1", "unique snippet 2"],
-  "Quality": ["unique snippet 3"],
-  "Price / Value Proposition": ["unique snippet 4", "unique snippet 5"],
+  "Functionality": ["sentence about what the product does", "sentence about features"],
+  "Quality": ["sentence about product quality"],
+  "Price / Value Proposition": ["sentence about pricing or value"],
   ...
 }
 
-CONTENT SNIPPETS TO ANALYZE:
-${snippets.map((snippet, index) => `${index + 1}. ${snippet}`).join('\n\n')}
-
-Important: Each snippet from the list should appear in the output exactly once. No duplicates allowed.
+REMEMBER: Extract and categorize actual sentences from the summary. Each sentence should be meaningful and informative.
 
 Return only the JSON object, no other text.
 `
 
     const response = await getOpenAI().chat.completions.create({
-      model: 'openai/gpt-4o',
+      model: 'gpt-4o',
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.1
     })
@@ -332,32 +476,35 @@ Return only the JSON object, no other text.
       
       // Validate that the response contains valid dimensions and remove duplicates
       const validDimensions: { [dimension: string]: string[] } = {}
-      const allUsedSnippets = new Set<string>()
+      const allUsedSentences = new Set<string>()
       
-      for (const [dimension, snippets] of Object.entries(parsed)) {
-        if (CONTENT_DIMENSIONS.includes(dimension) && Array.isArray(snippets)) {
-          const uniqueSnippets: string[] = []
+      for (const [dimension, sentences] of Object.entries(parsed)) {
+        if (CONTENT_DIMENSIONS.includes(dimension) && Array.isArray(sentences)) {
+          const validSentences: string[] = []
           
-          for (const snippet of snippets) {
-            if (typeof snippet === 'string' && snippet.length > 0) {
-              const trimmedSnippet = snippet.trim()
-              // Only add if we haven't seen this snippet before
-              if (!allUsedSnippets.has(trimmedSnippet)) {
-                allUsedSnippets.add(trimmedSnippet)
-                uniqueSnippets.push(trimmedSnippet)
+          for (const sentence of sentences) {
+            if (typeof sentence === 'string' && sentence.length > 0) {
+              const trimmedSentence = sentence.trim()
+              
+              // Check for minimum length and avoid duplicates
+              if (trimmedSentence.length >= 10 && !allUsedSentences.has(trimmedSentence)) {
+                allUsedSentences.add(trimmedSentence)
+                validSentences.push(trimmedSentence)
+              } else if (trimmedSentence.length < 10) {
+                console.log(`    ⚠️ Skipping short sentence: "${trimmedSentence}"`)
               } else {
-                console.log(`    ⚠️ Duplicate snippet detected and removed: "${trimmedSnippet.substring(0, 50)}..."`)
+                console.log(`    🔄 Duplicate sentence skipped: "${trimmedSentence.substring(0, 50)}..."`)
               }
             }
           }
           
-          if (uniqueSnippets.length > 0) {
-            validDimensions[dimension] = uniqueSnippets
+          if (validSentences.length > 0) {
+            validDimensions[dimension] = validSentences
           }
         }
       }
       
-      console.log(`    📊 Processed ${allUsedSnippets.size} unique snippets across ${Object.keys(validDimensions).length} dimensions`)
+      console.log(`    📊 Processed ${allUsedSentences.size} unique sentences across ${Object.keys(validDimensions).length} dimensions`)
       
       return validDimensions
     } catch (parseError) {
@@ -429,31 +576,58 @@ async function analyzeAgentRecommendationForUrls(
       websiteContent[dimension] = {}
     })
     
-    // Step 4: Process each prompt with multiple calls
+    // Step 4: Process each prompt with multiple calls and store incrementally
+    let documentId: string | null = null
+    
+    // Try to find existing document for incremental updates
+    try {
+      const collection = await AgentRecommendationContentCache.getCollectionInstance()
+      const existingDoc = await collection.findOne({
+        normalizedBrandUrls: { $all: normalizedBrandUrls },
+        agentPlatform: agentPlatform
+      })
+      
+      if (existingDoc) {
+        documentId = existingDoc._id?.toString() || null
+        // Load existing websiteContent to append to it
+        if (existingDoc.websiteContent) {
+          Object.assign(websiteContent, existingDoc.websiteContent)
+        }
+        console.log(`📄 Found existing document, will update incrementally: ${documentId}`)
+      } else {
+        console.log(`📄 No existing document found, will create new one`)
+      }
+    } catch (error) {
+      console.log(`⚠️ Error checking for existing document: ${error}`)
+    }
+    
     for (let i = 0; i < selectedPrompts.length; i++) {
       const prompt = selectedPrompts[i]
       console.log(`\n📊 Processing prompt ${i + 1}/${selectedPrompts.length}: "${prompt.substring(0, 50)}..."`)
       
-      try {
-        const allSnippetsForPrompt: string[] = []
-        const allDomainsForPrompt = new Set<string>()
+      try {        
+        // Step 5: Categorize snippets by domain and dimension
+        const domainSnippetsMap = new Map<string, string[]>()
         
-        // Make multiple calls for this prompt
+        // Collect all snippets by domain for this prompt
         for (let callIndex = 0; callIndex < CALLS_PER_PROMPT; callIndex++) {
           console.log(`  🔍 Call ${callIndex + 1}/${CALLS_PER_PROMPT}...`)
           
           try {
-            const agentResponse = await callOpenRouterWithWebSearch(prompt, agentPlatform)
+            const agentResponse = await callOpenAIWithWebSearch(prompt)
             
-            // Extract annotated snippets
-            const snippetsByDomain = extractAnnotatedSnippets(agentResponse.content, agentResponse.annotations)
+            // Extract summaries from annotation URLs using Firecrawl
+            const summariesByDomain = await extractSummariesFromAnnotations(agentResponse.annotations, brandNames)
             
-            console.log(`    📄 Extracted snippets from ${Object.keys(snippetsByDomain).length} domains`)
+            console.log(`    📄 Extracted summaries from ${Object.keys(summariesByDomain).length} domains`)
             
-            // Collect all snippets and domains
-            for (const [domain, snippets] of Object.entries(snippetsByDomain)) {
-              allSnippetsForPrompt.push(...snippets)
-              allDomainsForPrompt.add(domain)
+            // Merge summaries by domain
+            for (const [domain, summary] of Object.entries(summariesByDomain)) {
+              if (!domainSnippetsMap.has(domain)) {
+                domainSnippetsMap.set(domain, [])
+              }
+              // For now, store summary as a single "snippet" - we'll decompose it later
+              domainSnippetsMap.get(domain)!.push(summary)
             }
             
             // Rate limiting delay
@@ -464,29 +638,81 @@ async function analyzeAgentRecommendationForUrls(
           }
         }
         
-        console.log(`  📊 Total snippets collected for prompt: ${allSnippetsForPrompt.length} from ${allDomainsForPrompt.size} domains`)
+        console.log(`  📊 Total snippets collected for prompt: ${Array.from(domainSnippetsMap.values()).flat().length} from ${domainSnippetsMap.size} domains`)
         
-        // Step 5: Categorize all snippets for this prompt
-        if (allSnippetsForPrompt.length > 0) {
-          console.log(`  🤖 Categorizing snippets with GPT...`)
-          const categorizedSnippets = await categorizeSnippetsWithGPT(allSnippetsForPrompt, brandNames)
-          
-          // Add categorized snippets to website content
-          for (const [dimension, snippets] of Object.entries(categorizedSnippets)) {
-            // For agent recommendations, we'll assign snippets to a generic domain since 
-            // we're processing mixed content from multiple sources
-            const agentDomain = `agent-${agentPlatform}.recommendations`
+        // Categorize summaries for each domain
+        for (const [domain, summaries] of Array.from(domainSnippetsMap.entries())) {
+          if (summaries.length > 0) {
+            console.log(`  🤖 Processing ${summaries.length} summaries for domain: ${domain}`)
             
-            if (!websiteContent[dimension][agentDomain]) {
-              websiteContent[dimension][agentDomain] = []
+            try {
+              // Combine all summaries for this domain
+              const combinedSummary = summaries.join('\n\n')
+              console.log(`    📝 Combined summary length: ${combinedSummary.length} chars`)
+              console.log(`    📄 Summary preview: "${combinedSummary.substring(0, 200)}..."`)
+              
+              // Decompose summary into sentences and categorize
+              const categorizedSentences = await categorizeSummaryWithGPT(combinedSummary, brandNames)
+              
+              const outputCount = Object.values(categorizedSentences).flat().length
+              console.log(`    📤 Output from GPT: ${outputCount} sentences`)
+              
+              // Add categorized sentences to website content by domain
+              for (const [dimension, dimensionSentences] of Object.entries(categorizedSentences)) {
+                if (!websiteContent[dimension][domain]) {
+                  websiteContent[dimension][domain] = []
+                }
+                
+                // Add unique sentences only
+                const existingSentences = new Set(websiteContent[dimension][domain])
+                for (const sentence of dimensionSentences) {
+                  if (!existingSentences.has(sentence)) {
+                    websiteContent[dimension][domain].push(sentence)
+                  }
+                }
+              }
+              
+              const totalCategorizedSentences = Object.values(categorizedSentences).flat().length
+              console.log(`    ✅ Added ${totalCategorizedSentences} categorized sentences for ${domain}`)
+              
+            } catch (error) {
+              console.log(`    ❌ Error categorizing summary for domain ${domain}: ${error instanceof Error ? error.message : 'Unknown error'}`)
             }
-            
-            websiteContent[dimension][agentDomain].push(...snippets)
           }
-          
-          const totalCategorizedSnippets = Object.values(categorizedSnippets).flat().length
-          console.log(`  ✅ Added ${totalCategorizedSnippets} categorized snippets across ${Object.keys(categorizedSnippets).length} dimensions`)
         }
+          
+        // Store/update results in MongoDB after each prompt
+        try {
+          if (documentId) {
+            // Update existing document
+            await AgentRecommendationContentCache.update(documentId, {
+              totalPrompts: allPrompts.length,
+              sampledPrompts: selectedPrompts.length,
+              callsPerPrompt: CALLS_PER_PROMPT,
+              websiteContent: websiteContent,
+              sampledTime: new Date()
+            })
+            console.log(`  💾 Updated MongoDB document after prompt ${i + 1}`)
+          } else {
+            // Create new document
+            documentId = await AgentRecommendationContentCache.create(
+              brandNames,
+              normalizedBrandUrls,
+              agentPlatform,
+              allPrompts.length,
+              selectedPrompts.length,
+              CALLS_PER_PROMPT,
+              websiteContent
+            )
+            console.log(`  💾 Created new MongoDB document: ${documentId}`)
+          }
+        } catch (dbError) {
+          console.log(`  ❌ Error saving to MongoDB: ${dbError instanceof Error ? dbError.message : 'Unknown error'}`)
+        }
+        
+        // Progress update
+        const progress = ((i + 1) / selectedPrompts.length * 100).toFixed(1)
+        console.log(`  📈 Progress: ${progress}% (${i + 1}/${selectedPrompts.length} prompts completed)`)
         
         // Delay between prompts
         if (i < selectedPrompts.length - 1) {
@@ -498,17 +724,8 @@ async function analyzeAgentRecommendationForUrls(
       }
     }
     
-    // Step 6: Store results in MongoDB
-    console.log(`\n💾 Storing agent recommendation analysis results...`)
-    const documentId = await AgentRecommendationContentCache.create(
-      brandNames,
-      normalizedBrandUrls,
-      agentPlatform,
-      allPrompts.length,
-      selectedPrompts.length,
-      CALLS_PER_PROMPT,
-      websiteContent
-    )
+    // Step 6: Final summary (results already stored incrementally)
+    console.log(`\n✅ All prompts processed and stored incrementally!`)
     
     if (documentId) {
       console.log(`✅ Analysis complete! Document ID: ${documentId}`)
@@ -573,7 +790,7 @@ async function main() {
   }
 
   // Check required environment variables
-  const requiredEnvVars = ['OPENROUTER_API_KEY', 'MONGODB_URI']
+  const requiredEnvVars = ['OPENAI_API_KEY', 'FIRECRAWL_API_KEY', 'MONGODB_URI']
   const missingVars = requiredEnvVars.filter(varName => !process.env[varName])
   
   if (missingVars.length > 0) {

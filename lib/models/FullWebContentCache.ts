@@ -82,10 +82,23 @@ export class FullWebContentCache {
         websiteContent
       }
 
-      const result = await collection.insertOne(document)
+      // Use replaceOne with upsert to prevent duplicates
+      const result = await collection.replaceOne(
+        { normalizedBrandUrl }, // Filter by normalized brand URL
+        document,
+        { upsert: true }
+      )
+      
       if (result.acknowledged) {
-        console.log(`✅ Stored web content analysis for ${brandName}`)
-        return result.insertedId.toString()
+        if (result.upsertedId) {
+          console.log(`✅ Created new web content analysis for ${brandName}`)
+          return result.upsertedId.toString()
+        } else {
+          console.log(`✅ Updated existing web content analysis for ${brandName}`)
+          // Find the document to get its ID
+          const existingDoc = await collection.findOne({ normalizedBrandUrl })
+          return existingDoc?._id?.toString() || null
+        }
       }
       
       return null

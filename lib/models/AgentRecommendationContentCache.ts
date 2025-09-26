@@ -191,19 +191,27 @@ export class AgentRecommendationContentCache {
    */
   static async update(
     id: string,
-    websiteContent: WebsiteContent
+    updateData: Partial<{
+      totalPrompts: number
+      sampledPrompts: number
+      callsPerPrompt: number
+      websiteContent: WebsiteContent
+      sampledTime: Date
+    }>
   ): Promise<boolean> {
     try {
       const collection = await this.getCollection()
       const { ObjectId } = require('mongodb')
+      
+      // Always update sampledTime if not provided
+      const updateFields = {
+        ...updateData,
+        sampledTime: updateData.sampledTime || new Date()
+      }
+      
       const result = await collection.updateOne(
         { _id: new ObjectId(id) },
-        { 
-          $set: { 
-            websiteContent,
-            sampledTime: new Date()
-          }
-        }
+        { $set: updateFields }
       )
       return result.acknowledged && result.modifiedCount > 0
     } catch (error) {

@@ -85,7 +85,18 @@ function extractBrandNameFromUrl(url: string): string {
   try {
     const domain = new URL(url).hostname.replace('www.', '')
     const parts = domain.split('.')
-    // Return the main domain part (before .com, .org, etc.)
+    
+    // Special extensions that are often part of the brand name
+    const brandExtensions = ['.ai', '.chat', '.io', '.dev', '.tech', '.app', '.co']
+    
+    // Check if domain ends with a brand-relevant extension
+    const lastTwoParts = parts.slice(-2).join('.')
+    if (parts.length >= 2 && brandExtensions.some(ext => domain.endsWith(ext.substring(1)))) {
+      // Include the extension in the brand name (e.g., "rocket.chat" -> "Rocket.chat")
+      return lastTwoParts.charAt(0).toUpperCase() + lastTwoParts.slice(1)
+    }
+    
+    // Default: return just the main domain part (before .com, .org, etc.)
     return parts[0].charAt(0).toUpperCase() + parts[0].slice(1)
   } catch {
     return url

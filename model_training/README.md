@@ -88,12 +88,41 @@ Options:
 ```bash
 python policy_model.py brand_urls [options]
 
+# Example (Auto-optimized for Llama 8B):
+python policy_model.py https://www.sendbird.com https://www.twilio.com \
+    --reward_model_path ./reward_model_output/reward_model_epoch_10.pt
+
+# Manual configuration:
+python policy_model.py https://www.sendbird.com https://www.twilio.com \
+    --model meta-llama/Llama-3.1-8B \
+    --reward_model_path ./reward_model_output/reward_model_epoch_10.pt \
+    --use_lora \
+    --batch_size 1 \
+    --gradient_accumulation_steps 4 \
+    --learning_rate 1e-6
+
+# For smaller models:
+python policy_model.py https://www.sendbird.com \
+    --model microsoft/DialoGPT-medium \
+    --batch_size 4 \
+    --learning_rate 1e-5
+
 Options:
-  --model TEXT              Base model (default: microsoft/DialoGPT-medium)
-  --reward_model_path TEXT  Path to trained reward model
-  --batch_size INTEGER      Batch size (default: 4)
-  --epochs INTEGER          Training epochs (default: 5)
-  --output_dir TEXT         Output directory (default: ./policy_model_output)
+  --model TEXT                      Base model (default: meta-llama/Llama-3.1-8B)
+  --reward_model_path TEXT          Path to trained reward model
+  --batch_size INTEGER              Batch size (default: 2 for large models, 4 for small)
+  --epochs INTEGER                  Training epochs (default: 5)
+  --learning_rate FLOAT             Learning rate (auto-set based on model size)
+  --use_lora                        Use LoRA (auto-enabled for 8B+ models)
+  --gradient_accumulation_steps INT Gradient accumulation (auto-set for large models)
+  --max_length INTEGER              Maximum sequence length (default: 512)
+  --output_dir TEXT                 Output directory (default: ./policy_model_output)
+
+Prerequisites:
+- Trained reward model (from reward_model.py)
+- Web content data in MongoDB (from analyze-web-content.ts)
+- Brand URLs must have existing FullWebContentCache entries
+- For Llama models: HuggingFace access token and 16GB+ GPU memory
 ```
 
 ## 📁 Output Structure

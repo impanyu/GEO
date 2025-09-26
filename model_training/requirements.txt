@@ -8,6 +8,13 @@ accelerate>=0.20.0
 datasets>=2.12.0
 evaluate>=0.4.0
 
+# Memory optimization for large models
+peft>=0.4.0
+bitsandbytes>=0.41.0
+
+# Additional model support
+sentencepiece>=0.1.99
+
 # Visualization
 matplotlib>=3.5.0
 seaborn>=0.11.0

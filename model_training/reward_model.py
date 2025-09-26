@@ -24,7 +24,11 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, random_split
 from transformers import (
     AutoTokenizer, 
-    AutoModelForSequenceClassification,
+    AutoModel,  # Changed from AutoModelForSequenceClassification
+    LlamaForCausalLM,
+    LlamaTokenizer,
+    GPT2LMHeadModel,
+    GPT2Tokenizer,
     get_linear_schedule_with_warmup,
     set_seed
 )
@@ -44,7 +48,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrainingConfig:
     """Training configuration"""
-    model_name: str = "microsoft/DialoGPT-medium"
+    model_name: str = "meta-llama/Llama-3.1-8B"
     max_length: int = 512
     batch_size: int = 8
     learning_rate: float = 2e-5
@@ -55,6 +59,8 @@ class TrainingConfig:
     seed: int = 42
     output_dir: str = "./reward_model_output"
     save_every: int = 2
+    use_lora: bool = False  # Added for large model support
+    gradient_accumulation_steps: int = 1  # Added for large models
 
 class VisibilityDataset(Dataset):
     """Dataset for visibility prediction"""
@@ -90,22 +96,109 @@ class VisibilityDataset(Dataset):
         }
 
 class RewardModel(nn.Module):
-    """Reward model for visibility prediction"""
+    """Improved reward model for visibility prediction - supports all LLM architectures"""
     
-    def __init__(self, model_name: str, num_labels: int = 1):
+    def __init__(self, model_name: str, use_lora: bool = False):
         super().__init__()
-        self.backbone = AutoModelForSequenceClassification.from_pretrained(
-            model_name, 
-            num_labels=num_labels
+        self.model_name = model_name
+        self.use_lora = use_lora
+        
+        # Load model based on architecture
+        logger.info(f"Loading model: {model_name}")
+        if "llama" in model_name.lower():
+            self.backbone = LlamaForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                device_map="auto" if torch.cuda.is_available() else None
+            )
+            self.hidden_size = self.backbone.config.hidden_size
+        elif "gpt" in model_name.lower():
+            self.backbone = AutoModel.from_pretrained(model_name)
+            self.hidden_size = self.backbone.config.hidden_size
+        else:
+            # Generic transformer
+            self.backbone = AutoModel.from_pretrained(model_name)
+            self.hidden_size = self.backbone.config.hidden_size
+        
+        # Add improved reward head
+        self.reward_head = nn.Sequential(
+            nn.Linear(self.hidden_size, self.hidden_size // 2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(self.hidden_size // 2, 1),
+            nn.Sigmoid()  # Ensure output is between 0 and 1
         )
-        # Modify the classifier to output a single continuous value
-        self.backbone.classifier = nn.Linear(self.backbone.config.hidden_size, 1)
-        self.sigmoid = nn.Sigmoid()
+        
+        # Optional: Use LoRA for large models to reduce memory
+        if use_lora:
+            self._setup_lora()
+        
+        logger.info(f"Model loaded with {sum(p.numel() for p in self.parameters())} parameters")
     
-    def forward(self, input_ids, attention_mask):
-        outputs = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
-        # Apply sigmoid to ensure output is between 0 and 1 (like visibility scores)
-        return self.sigmoid(outputs.logits.squeeze(-1))
+    def _setup_lora(self):
+        """Setup LoRA (Low-Rank Adaptation) for memory efficiency"""
+        try:
+            from peft import get_peft_model, LoraConfig, TaskType
+            
+            # Configure LoRA based on model type
+            if "llama" in self.model_name.lower():
+                target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+            else:
+                target_modules = ["q_proj", "v_proj", "k_proj", "o_proj"]
+            
+            lora_config = LoraConfig(
+                task_type=TaskType.FEATURE_EXTRACTION,
+                inference_mode=False,
+                r=16,  # Rank
+                lora_alpha=32,
+                lora_dropout=0.1,
+                target_modules=target_modules
+            )
+            
+            self.backbone = get_peft_model(self.backbone, lora_config)
+            logger.info("✅ LoRA enabled for memory efficiency")
+            
+        except ImportError:
+            logger.warning("⚠️ PEFT not installed. Install with: pip install peft")
+            logger.warning("   Continuing without LoRA - may require more memory")
+    
+    def forward(self, input_ids, attention_mask=None):
+        # Get model outputs
+        if "llama" in self.model_name.lower():
+            # For Llama, we need to handle it differently
+            outputs = self.backbone(
+                input_ids=input_ids, 
+                attention_mask=attention_mask,
+                output_hidden_states=True
+            )
+            # Use last hidden state
+            hidden_states = outputs.hidden_states[-1]
+        else:
+            # For other models (GPT-2, DialoGPT, etc.)
+            outputs = self.backbone(
+                input_ids=input_ids,
+                attention_mask=attention_mask
+            )
+            hidden_states = outputs.last_hidden_state
+        
+        # Pool the hidden states (always use mean pooling for consistency)
+        if attention_mask is not None:
+            # Mean pooling with attention mask (preferred)
+            mask_expanded = attention_mask.unsqueeze(-1).expand(hidden_states.size()).float()
+            sum_embeddings = torch.sum(hidden_states * mask_expanded, 1)
+            sum_mask = torch.clamp(mask_expanded.sum(1), min=1e-9)
+            pooled_output = sum_embeddings / sum_mask
+        else:
+            # Mean pooling without attention mask (fallback)
+            # This is safer than using last token which might be padding
+            pooled_output = torch.mean(hidden_states, dim=1)
+            logger.warning("⚠️ No attention mask provided - using simple mean pooling. "
+                         "This may include padding tokens in the average.")
+        
+        # Get reward score
+        reward_score = self.reward_head(pooled_output)
+        
+        return reward_score.squeeze(-1)
 
 class RewardModelTrainer:
     """Trainer for the reward model"""
@@ -118,13 +211,32 @@ class RewardModelTrainer:
         # Set seed for reproducibility
         set_seed(config.seed)
         
-        # Initialize tokenizer and model
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+        # Initialize tokenizer based on model type
+        if "llama" in config.model_name.lower():
+            self.tokenizer = LlamaTokenizer.from_pretrained(config.model_name)
+        elif "gpt2" in config.model_name.lower():
+            self.tokenizer = GPT2Tokenizer.from_pretrained(config.model_name)
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+        
+        # Set pad token if not exists
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        self.model = RewardModel(config.model_name)
-        self.model.to(self.device)
+        # Auto-determine LoRA usage for large models
+        use_lora = config.use_lora
+        if not use_lora and "llama" in config.model_name.lower() and "8b" in config.model_name.lower():
+            use_lora = True
+            logger.info("🔥 Auto-enabling LoRA for Llama 8B model")
+        
+        # Initialize model with improved architecture
+        self.model = RewardModel(config.model_name, use_lora=use_lora)
+        
+        # Move to device (handle large models)
+        if not torch.cuda.is_available() or not use_lora:
+            self.model.to(self.device)
+        else:
+            logger.info("🎮 Model using device_map for large model optimization")
         
         # Create output directory
         os.makedirs(config.output_dir, exist_ok=True)
@@ -212,32 +324,48 @@ class RewardModelTrainer:
         return train_loader, val_loader
     
     def train_epoch(self, train_loader: DataLoader, optimizer, scheduler) -> float:
-        """Train for one epoch"""
+        """Train for one epoch with gradient accumulation support"""
         self.model.train()
         total_loss = 0
-        criterion = nn.MSELoss()
+        criterion = nn.BCELoss()  # Better for probability prediction (0-1 range)
         
         progress_bar = tqdm(train_loader, desc="Training")
         
-        for batch in progress_bar:
-            # Move to device
-            input_ids = batch['input_ids'].to(self.device)
-            attention_mask = batch['attention_mask'].to(self.device)
-            visibility = batch['visibility'].to(self.device)
+        # Gradient accumulation
+        accumulation_steps = self.config.gradient_accumulation_steps
+        optimizer.zero_grad()
+        
+        for step, batch in enumerate(progress_bar):
+            # Move to device (handle device_map for large models)
+            if hasattr(self.model.backbone, 'device') and self.model.backbone.device != self.device:
+                # Model is using device_map, inputs will be moved automatically
+                input_ids = batch['input_ids']
+                attention_mask = batch['attention_mask']
+                visibility = batch['visibility'].to(self.device)
+            else:
+                input_ids = batch['input_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+                visibility = batch['visibility'].to(self.device)
             
             # Forward pass
-            optimizer.zero_grad()
             predictions = self.model(input_ids, attention_mask)
             loss = criterion(predictions, visibility)
             
+            # Scale loss for gradient accumulation
+            loss = loss / accumulation_steps
+            
             # Backward pass
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            optimizer.step()
-            scheduler.step()
             
-            total_loss += loss.item()
-            progress_bar.set_postfix({'loss': loss.item()})
+            # Update every accumulation_steps or at the end
+            if (step + 1) % accumulation_steps == 0 or (step + 1) == len(train_loader):
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+            
+            total_loss += loss.item() * accumulation_steps  # Unscale for logging
+            progress_bar.set_postfix({'loss': loss.item() * accumulation_steps})
         
         return total_loss / len(train_loader)
     
@@ -246,13 +374,20 @@ class RewardModelTrainer:
         self.model.eval()
         total_loss = 0
         total_mae = 0
-        criterion = nn.MSELoss()
+        criterion = nn.BCELoss()  # Better for probability prediction (0-1 range)
         
         with torch.no_grad():
             for batch in tqdm(val_loader, desc="Validation"):
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                visibility = batch['visibility'].to(self.device)
+                # Move to device (handle device_map for large models)
+                if hasattr(self.model.backbone, 'device') and self.model.backbone.device != self.device:
+                    # Model is using device_map, inputs will be moved automatically
+                    input_ids = batch['input_ids']
+                    attention_mask = batch['attention_mask']
+                    visibility = batch['visibility'].to(self.device)
+                else:
+                    input_ids = batch['input_ids'].to(self.device)
+                    attention_mask = batch['attention_mask'].to(self.device)
+                    visibility = batch['visibility'].to(self.device)
                 
                 predictions = self.model(input_ids, attention_mask)
                 loss = criterion(predictions, visibility)
@@ -380,7 +515,7 @@ def main():
     )
     parser.add_argument(
         '--model', 
-        default='microsoft/DialoGPT-medium',
+        default='meta-llama/Llama-3.1-8B',
         help='Base model to fine-tune'
     )
     parser.add_argument(
@@ -406,8 +541,36 @@ def main():
         default='./reward_model_output',
         help='Output directory for model and results'
     )
+    parser.add_argument(
+        '--use_lora',
+        action='store_true',
+        help='Use LoRA for memory-efficient training (auto-enabled for 8B+ models)'
+    )
+    parser.add_argument(
+        '--gradient_accumulation_steps',
+        type=int,
+        default=1,
+        help='Number of gradient accumulation steps (useful for large models)'
+    )
+    parser.add_argument(
+        '--max_length',
+        type=int,
+        default=512,
+        help='Maximum sequence length'
+    )
     
     args = parser.parse_args()
+    
+    # Auto-adjust settings for large models
+    if "llama" in args.model.lower() and "8b" in args.model.lower():
+        logger.info("🔥 Detected Llama 8B model - auto-adjusting settings for large model")
+
+        if args.gradient_accumulation_steps == 1:
+            logger.info(f"   Setting gradient accumulation steps to 4")
+            args.gradient_accumulation_steps = 4
+        if not args.use_lora:
+            logger.info(f"   Auto-enabling LoRA")
+            args.use_lora = True
     
     # Create training config
     config = TrainingConfig(
@@ -415,7 +578,10 @@ def main():
         batch_size=args.batch_size,
         num_epochs=args.epochs,
         learning_rate=args.learning_rate,
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        use_lora=args.use_lora,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        max_length=args.max_length
     )
     
     # Initialize trainer
