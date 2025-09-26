@@ -22,10 +22,37 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv('../.env.local')
 
-# Add parent directory to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib.models.FullWebContentCache import FullWebContentCache
-from lib.models.PromptCache import normalizeUrl
+# MongoDB connection setup
+import urllib.parse
+
+def normalize_url(url: str) -> str:
+    """Normalize URL for consistent comparison"""
+    try:
+        if not url.startswith(('http://', 'https://')):
+            url = f'https://{url}'
+        
+        parsed = urllib.parse.urlparse(url)
+        normalized = f"{parsed.scheme}://{parsed.netloc.lower()}"
+        
+        # Remove www. prefix
+        if normalized.startswith('https://www.'):
+            normalized = normalized.replace('https://www.', 'https://')
+        elif normalized.startswith('http://www.'):
+            normalized = normalized.replace('http://www.', 'http://')
+            
+        return normalized
+    except Exception:
+        return url.lower()
+
+async def get_mongodb_connection():
+    """Get MongoDB connection"""
+    mongodb_uri = os.getenv('MONGODB_URI')
+    if not mongodb_uri:
+        raise ValueError("MONGODB_URI environment variable not set")
+    
+    client = pymongo.MongoClient(mongodb_uri)
+    db = client['springbrand-ai']
+    return db
 
 import torch
 import torch.nn as nn
@@ -892,21 +919,27 @@ async def load_training_data(brand_urls: List[str]) -> List[Dict]:
     logger.info(f"Loading training data for {len(brand_urls)} brand URLs...")
     
     training_data = []
+    db = await get_mongodb_connection()
+    collection = db['full_web_content']
     
     for brand_url in brand_urls:
         try:
             # Normalize URL
-            normalized_url = normalizeUrl(brand_url)
+            normalized_url = normalize_url(brand_url)
             logger.info(f"Loading data for {brand_url} (normalized: {normalized_url})")
             
             # Get data from MongoDB
-            web_content_doc = await FullWebContentCache.findByBrandUrl(normalized_url)
+            web_content_doc = collection.find_one({'normalizedBrandUrl': normalized_url})
+            if not web_content_doc:
+                # Try with original URL as fallback
+                web_content_doc = collection.find_one({'brandUrl': brand_url})
+            
             if not web_content_doc:
                 logger.warning(f"No web content found for {brand_url}")
                 continue
                 
-            brand_name = web_content_doc.brandName
-            website_content = web_content_doc.websiteContent
+            brand_name = web_content_doc['brandName']
+            website_content = web_content_doc['websiteContent']
             
             # Extract training samples from each dimension and domain
             for dimension, content_snippets in website_content.items():
