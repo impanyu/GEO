@@ -546,87 +546,87 @@ class GRPOTrainer:
         generated_sentences = []
         log_probs_list = []
         
-        with torch.no_grad():
-            for i in range(len(batch['input_ids'])):
-                # Always move to device - let device_map handle the rest
-                input_ids = batch['input_ids'][i:i+1]
-                attention_mask = batch['attention_mask'][i:i+1]
+        # Note: Don't use torch.no_grad() here because we need gradients for GRPO
+        for i in range(len(batch['input_ids'])):
+            # Always move to device - let device_map handle the rest
+            input_ids = batch['input_ids'][i:i+1]
+            attention_mask = batch['attention_mask'][i:i+1]
+            
+            # Determine the correct device for the model
+            if hasattr(self.model.backbone, 'hf_device_map') and self.model.backbone.hf_device_map:
+                # Model uses device_map, find the first device
+                first_device = list(self.model.backbone.hf_device_map.values())[0]
+                target_device = f'cuda:{first_device}' if isinstance(first_device, int) else first_device
+            elif hasattr(self.model.backbone, 'device'):
+                # Model has a device attribute
+                target_device = self.model.backbone.device
+            else:
+                # Fall back to checking first parameter device
+                target_device = next(self.model.parameters()).device
+            
+            # Move tensors to the correct device
+            input_ids = input_ids.to(target_device)
+            attention_mask = attention_mask.to(target_device)
+            
+            # Generate response with sampling
+            outputs = self.model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=self.config.max_new_tokens,
+                do_sample=True,
+                temperature=self.config.temperature,
+                top_k=self.config.top_k,
+                top_p=self.config.top_p,
+                pad_token_id=self.tokenizer.pad_token_id,
+                return_dict_in_generate=True,
+                output_scores=True
+            )
+            
+            generated_ids = outputs.sequences[0]
+            
+            # Calculate log probabilities for the generated sequence
+            input_length = input_ids.shape[1]
+            new_token_ids = generated_ids[input_length:]
+            
+            if len(new_token_ids) > 0 and hasattr(outputs, 'scores'):
+                # Calculate log probabilities for generated tokens
+                log_probs = []
+                for j, (score, token_id) in enumerate(zip(outputs.scores, new_token_ids)):
+                    token_log_prob = torch.log_softmax(score, dim=-1)[0, token_id]
+                    log_probs.append(token_log_prob)
                 
-                # Determine the correct device for the model
-                if hasattr(self.model.backbone, 'hf_device_map') and self.model.backbone.hf_device_map:
-                    # Model uses device_map, find the first device
-                    first_device = list(self.model.backbone.hf_device_map.values())[0]
-                    target_device = f'cuda:{first_device}' if isinstance(first_device, int) else first_device
-                elif hasattr(self.model.backbone, 'device'):
-                    # Model has a device attribute
-                    target_device = self.model.backbone.device
+                if log_probs:
+                    # Sum log probabilities (log of product = sum of logs)
+                    log_probs_list.append(torch.stack(log_probs).sum())
                 else:
-                    # Fall back to checking first parameter device
-                    target_device = next(self.model.parameters()).device
-                
-                # Move tensors to the correct device
-                input_ids = input_ids.to(target_device)
-                attention_mask = attention_mask.to(target_device)
-                
-                # Generate response with sampling
-                outputs = self.model.generate(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    max_new_tokens=self.config.max_new_tokens,
-                    do_sample=True,
-                    temperature=self.config.temperature,
-                    top_k=self.config.top_k,
-                    top_p=self.config.top_p,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    return_dict_in_generate=True,
-                    output_scores=True
-                )
-                
-                generated_ids = outputs.sequences[0]
-                
-                # Calculate log probabilities for the generated sequence
-                input_length = input_ids.shape[1]
-                new_token_ids = generated_ids[input_length:]
-                
-                if len(new_token_ids) > 0 and hasattr(outputs, 'scores'):
-                    # Calculate log probabilities for generated tokens
-                    log_probs = []
-                    for j, (score, token_id) in enumerate(zip(outputs.scores, new_token_ids)):
-                        token_log_prob = torch.log_softmax(score, dim=-1)[0, token_id]
-                        log_probs.append(token_log_prob)
-                    
-                    if log_probs:
-                        # Sum log probabilities (log of product = sum of logs)
-                        log_probs_list.append(torch.stack(log_probs).sum())
+                    log_probs_list.append(torch.tensor(0.0, device=target_device, requires_grad=True))
+            else:
+                log_probs_list.append(torch.tensor(0.0, device=target_device, requires_grad=True))
+            
+            # Decode and extract sentences
+            generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+            
+            # Extract modified sentences from generated text
+            try:
+                if "Modified sentences:" in generated_text:
+                    json_part = generated_text.split("Modified sentences:")[-1].strip()
+                    modified_sentences = json.loads(json_part)
+                    if isinstance(modified_sentences, list):
+                        generated_sentences.append(modified_sentences)
                     else:
-                        log_probs_list.append(torch.tensor(0.0, device=target_device))
+                        generated_sentences.append([str(modified_sentences)])
                 else:
-                    log_probs_list.append(torch.tensor(0.0, device=target_device))
-                
-                # Decode and extract sentences
-                generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
-                
-                # Extract modified sentences from generated text
-                try:
-                    if "Modified sentences:" in generated_text:
-                        json_part = generated_text.split("Modified sentences:")[-1].strip()
-                        modified_sentences = json.loads(json_part)
-                        if isinstance(modified_sentences, list):
-                            generated_sentences.append(modified_sentences)
-                        else:
-                            generated_sentences.append([str(modified_sentences)])
-                    else:
-                        generated_sentences.append(batch['original_sentences'][i])
-                except:
                     generated_sentences.append(batch['original_sentences'][i])
+            except:
+                generated_sentences.append(batch['original_sentences'][i])
         
-        # Stack log probabilities, ensuring they're on the same device
+        # Stack log probabilities, ensuring they're on the same device and require gradients
         if log_probs_list:
             log_probs = torch.stack(log_probs_list)
         else:
             # Get device from first model parameter
             model_device = next(self.model.parameters()).device
-            log_probs = torch.zeros(len(batch['input_ids']), device=model_device)
+            log_probs = torch.zeros(len(batch['input_ids']), device=model_device, requires_grad=True)
         
         # Restore original training mode
         if was_training:
