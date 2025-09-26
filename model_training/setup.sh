@@ -38,7 +38,7 @@ pip install --upgrade pip
 echo "🔥 Installing PyTorch..."
 if command -v nvidia-smi &> /dev/null; then
     echo "🎮 CUDA detected, installing GPU version..."
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 else
     echo "💻 Installing CPU version..."
     pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu

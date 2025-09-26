@@ -344,3 +344,6 @@ credentials.json
 *.pem
 *.key
 .secrets
+
+# MongoDB backups (may contain sensitive data)
+mongodb_backup/
