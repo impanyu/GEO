@@ -26,23 +26,24 @@ load_dotenv('../.env.local')
 import urllib.parse
 
 def normalize_url(url: str) -> str:
-    """Normalize URL for consistent comparison"""
-    try:
-        if not url.startswith(('http://', 'https://')):
-            url = f'https://{url}'
-        
-        parsed = urllib.parse.urlparse(url)
-        normalized = f"{parsed.scheme}://{parsed.netloc.lower()}"
-        
-        # Remove www. prefix
-        if normalized.startswith('https://www.'):
-            normalized = normalized.replace('https://www.', 'https://')
-        elif normalized.startswith('http://www.'):
-            normalized = normalized.replace('http://www.', 'http://')
-            
-        return normalized
-    except Exception:
-        return url.lower()
+    """Normalize URL for consistent comparison - matches PromptCache.ts logic"""
+    # Remove protocol if present
+    normalized = url
+    if normalized.startswith('https://'):
+        normalized = normalized[8:]  # Remove 'https://'
+    elif normalized.startswith('http://'):
+        normalized = normalized[7:]   # Remove 'http://'
+    
+    # Remove www. if present
+    if normalized.startswith('www.'):
+        normalized = normalized[4:]   # Remove 'www.'
+    
+    # Remove trailing slash
+    if normalized.endswith('/'):
+        normalized = normalized[:-1]  # Remove trailing '/'
+    
+    # Convert to lowercase for consistent comparison
+    return normalized.lower()
 
 async def get_mongodb_connection():
     """Get MongoDB connection"""
