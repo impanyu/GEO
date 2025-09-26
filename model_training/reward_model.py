@@ -105,19 +105,24 @@ class RewardModel(nn.Module):
         
         # Load model based on architecture
         logger.info(f"Loading model: {model_name}")
+        
+        # Get HF token for authenticated models
+        hf_token = os.getenv('HF_TOKEN')
+        
         if "llama" in model_name.lower():
             self.backbone = LlamaForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto" if torch.cuda.is_available() else None
+                device_map="auto" if torch.cuda.is_available() else None,
+                token=hf_token
             )
             self.hidden_size = self.backbone.config.hidden_size
         elif "gpt" in model_name.lower():
-            self.backbone = AutoModel.from_pretrained(model_name)
+            self.backbone = AutoModel.from_pretrained(model_name, token=hf_token)
             self.hidden_size = self.backbone.config.hidden_size
         else:
             # Generic transformer
-            self.backbone = AutoModel.from_pretrained(model_name)
+            self.backbone = AutoModel.from_pretrained(model_name, token=hf_token)
             self.hidden_size = self.backbone.config.hidden_size
         
         # Add improved reward head
@@ -211,13 +216,16 @@ class RewardModelTrainer:
         # Set seed for reproducibility
         set_seed(config.seed)
         
+        # Get HF token for authenticated models
+        hf_token = os.getenv('HF_TOKEN')
+        
         # Initialize tokenizer based on model type
         if "llama" in config.model_name.lower():
-            self.tokenizer = LlamaTokenizer.from_pretrained(config.model_name)
+            self.tokenizer = LlamaTokenizer.from_pretrained(config.model_name, token=hf_token)
         elif "gpt2" in config.model_name.lower():
-            self.tokenizer = GPT2Tokenizer.from_pretrained(config.model_name)
+            self.tokenizer = GPT2Tokenizer.from_pretrained(config.model_name, token=hf_token)
         else:
-            self.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, token=hf_token)
         
         # Set pad token if not exists
         if self.tokenizer.pad_token is None:

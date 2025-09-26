@@ -217,16 +217,19 @@ class RewardCalculator:
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
         
+        # Get HF token for authenticated models
+        hf_token = os.getenv('HF_TOKEN')
+        
         # Also initialize the tokenizer for consistent inference
         if "llama" in config.model_name.lower():
             from transformers import LlamaTokenizer
-            self.reward_tokenizer = LlamaTokenizer.from_pretrained(config.model_name)
+            self.reward_tokenizer = LlamaTokenizer.from_pretrained(config.model_name, token=hf_token)
         elif "gpt2" in config.model_name.lower():
             from transformers import GPT2Tokenizer
-            self.reward_tokenizer = GPT2Tokenizer.from_pretrained(config.model_name)
+            self.reward_tokenizer = GPT2Tokenizer.from_pretrained(config.model_name, token=hf_token)
         else:
             from transformers import AutoTokenizer
-            self.reward_tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+            self.reward_tokenizer = AutoTokenizer.from_pretrained(config.model_name, token=hf_token)
         
         # Set pad token if not exists
         if self.reward_tokenizer.pad_token is None:
@@ -378,15 +381,23 @@ class GRPOModel(nn.Module):
         
         # Load model based on architecture
         logger.info(f"Loading GRPO model: {model_name}")
+        
+        # Get HF token for authenticated models
+        hf_token = os.getenv('HF_TOKEN')
+        
         if "llama" in model_name.lower():
             self.backbone = LlamaForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto" if torch.cuda.is_available() else None
+                device_map="auto" if torch.cuda.is_available() else None,
+                token=hf_token
             )
         else:
             # Generic causal LM (GPT-2, DialoGPT, etc.)
-            self.backbone = AutoModelForCausalLM.from_pretrained(model_name)
+            self.backbone = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                token=hf_token
+            )
         
         # No value head needed for pure GRPO!
         
@@ -442,13 +453,16 @@ class GRPOTrainer:
         # Set seed
         set_seed(config.seed)
         
+        # Get HF token for authenticated models
+        hf_token = os.getenv('HF_TOKEN')
+        
         # Initialize tokenizer based on model type
         if "llama" in config.model_name.lower():
-            self.tokenizer = LlamaTokenizer.from_pretrained(config.model_name)
+            self.tokenizer = LlamaTokenizer.from_pretrained(config.model_name, token=hf_token)
         elif "gpt2" in config.model_name.lower():
-            self.tokenizer = GPT2Tokenizer.from_pretrained(config.model_name)
+            self.tokenizer = GPT2Tokenizer.from_pretrained(config.model_name, token=hf_token)
         else:
-            self.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, token=hf_token)
         
         # Set pad token if not exists
         if self.tokenizer.pad_token is None:
@@ -988,7 +1002,7 @@ def main():
     )
     parser.add_argument(
         '--model',
-        default='meta-llama/Llama-3.1-8B',
+        default='meta-llama/Llama-3.1-8B-Instruct',
         help='Base model to fine-tune'
     )
     parser.add_argument(
