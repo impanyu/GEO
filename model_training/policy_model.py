@@ -536,18 +536,37 @@ class GRPOTrainer:
         was_training = self.model.training
         self.model.eval()  # Switch to eval for generation
         
+        # Debug: Check model device
+        try:
+            model_device = next(self.model.parameters()).device
+            logger.debug(f"Model is on device: {model_device}")
+        except Exception as e:
+            logger.debug(f"Could not determine model device: {e}")
+        
         generated_sentences = []
         log_probs_list = []
         
         with torch.no_grad():
             for i in range(len(batch['input_ids'])):
-                # Handle device mapping for large models
-                if hasattr(self.model.backbone, 'device') and self.model.backbone.device != self.device:
-                    input_ids = batch['input_ids'][i:i+1]
-                    attention_mask = batch['attention_mask'][i:i+1]
+                # Always move to device - let device_map handle the rest
+                input_ids = batch['input_ids'][i:i+1]
+                attention_mask = batch['attention_mask'][i:i+1]
+                
+                # Determine the correct device for the model
+                if hasattr(self.model.backbone, 'hf_device_map') and self.model.backbone.hf_device_map:
+                    # Model uses device_map, find the first device
+                    first_device = list(self.model.backbone.hf_device_map.values())[0]
+                    target_device = f'cuda:{first_device}' if isinstance(first_device, int) else first_device
+                elif hasattr(self.model.backbone, 'device'):
+                    # Model has a device attribute
+                    target_device = self.model.backbone.device
                 else:
-                    input_ids = batch['input_ids'][i:i+1].to(self.device)
-                    attention_mask = batch['attention_mask'][i:i+1].to(self.device)
+                    # Fall back to checking first parameter device
+                    target_device = next(self.model.parameters()).device
+                
+                # Move tensors to the correct device
+                input_ids = input_ids.to(target_device)
+                attention_mask = attention_mask.to(target_device)
                 
                 # Generate response with sampling
                 outputs = self.model.generate(
@@ -580,9 +599,9 @@ class GRPOTrainer:
                         # Sum log probabilities (log of product = sum of logs)
                         log_probs_list.append(torch.stack(log_probs).sum())
                     else:
-                        log_probs_list.append(torch.tensor(0.0, device=self.device))
+                        log_probs_list.append(torch.tensor(0.0, device=target_device))
                 else:
-                    log_probs_list.append(torch.tensor(0.0, device=self.device))
+                    log_probs_list.append(torch.tensor(0.0, device=target_device))
                 
                 # Decode and extract sentences
                 generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
@@ -601,7 +620,13 @@ class GRPOTrainer:
                 except:
                     generated_sentences.append(batch['original_sentences'][i])
         
-        log_probs = torch.stack(log_probs_list) if log_probs_list else torch.zeros(len(batch['input_ids']), device=self.device)
+        # Stack log probabilities, ensuring they're on the same device
+        if log_probs_list:
+            log_probs = torch.stack(log_probs_list)
+        else:
+            # Get device from first model parameter
+            model_device = next(self.model.parameters()).device
+            log_probs = torch.zeros(len(batch['input_ids']), device=model_device)
         
         # Restore original training mode
         if was_training:
