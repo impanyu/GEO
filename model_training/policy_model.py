@@ -168,7 +168,7 @@ class SentenceModificationDataset(Dataset):
         sentences_json = json.dumps(item['sentences'])
         prompt = f"Modify the following sentences to improve brand visibility:\nSentences: {sentences_json}\nDimension: {item['dimension']}\nDomain: {item['domain']}\nModified sentences:"
         
-        # Tokenize
+        # Tokenize with consistent padding
         encoding = self.tokenizer(
             prompt,
             truncation=True,
@@ -178,8 +178,8 @@ class SentenceModificationDataset(Dataset):
         )
         
         return {
-            'input_ids': encoding['input_ids'].flatten(),
-            'attention_mask': encoding['attention_mask'].flatten(),
+            'input_ids': encoding['input_ids'].squeeze(0),  # Remove batch dimension but keep tensor
+            'attention_mask': encoding['attention_mask'].squeeze(0),  # Remove batch dimension but keep tensor
             'original_sentences': item['sentences'],
             'dimension': item['dimension'],
             'domain': item['domain'],
@@ -503,7 +503,7 @@ class GRPOTrainer:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        # Auto-determine LoRA usage for large models
+        # Auto-determine LoRA usage for large models (unless explicitly disabled)
         use_lora = config.use_lora
         if not use_lora and "llama" in config.model_name.lower() and "8b" in config.model_name.lower():
             use_lora = True
@@ -937,13 +937,37 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
         torch.save(checkpoint, checkpoint_path)
         logger.info(f"Saved GRPO checkpoint: {checkpoint_path}")
     
+    def collate_fn(self, batch):
+        """Custom collate function to handle batching"""
+        # Since dataset already pads to max_length, we just need to stack tensors
+        input_ids = torch.stack([item['input_ids'] for item in batch])
+        attention_masks = torch.stack([item['attention_mask'] for item in batch])
+        original_sentences = [item['original_sentences'] for item in batch]
+        dimensions = [item['dimension'] for item in batch]
+        domains = [item['domain'] for item in batch]
+        brand_names = [item['brand_name'] for item in batch]
+        
+        return {
+            'input_ids': input_ids,
+            'attention_mask': attention_masks,
+            'original_sentences': original_sentences,
+            'dimension': dimensions,
+            'domain': domains,
+            'brand_name': brand_names
+        }
+
     async def train(self, train_data: List[Dict]):
         """Main GRPO training loop"""
         logger.info("Starting GRPO (Generative Reinforcement Policy Optimization) training")
         
-        # Create dataset and dataloader
+        # Create dataset and dataloader with custom collate function
         dataset = SentenceModificationDataset(train_data, self.tokenizer, self.config.max_length)
-        data_loader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
+        data_loader = DataLoader(
+            dataset, 
+            batch_size=self.config.batch_size, 
+            shuffle=True,
+            collate_fn=self.collate_fn
+        )
         
         # Setup optimizer
         optimizer = optim.AdamW(self.model.parameters(), lr=self.config.learning_rate)
@@ -1068,6 +1092,11 @@ def main():
         help='Use LoRA for memory-efficient training (auto-enabled for 8B+ models)'
     )
     parser.add_argument(
+        '--no_lora',
+        action='store_true',
+        help='Force disable LoRA even for large models'
+    )
+    parser.add_argument(
         '--gradient_accumulation_steps',
         type=int,
         default=1,
@@ -1095,9 +1124,12 @@ def main():
         if args.gradient_accumulation_steps == 1:
             logger.info(f"   Setting gradient accumulation steps to 4")
             args.gradient_accumulation_steps = 4
-        if not args.use_lora:
+        if not args.use_lora and not args.no_lora:
             logger.info(f"   Auto-enabling LoRA")
             args.use_lora = True
+        elif args.no_lora:
+            logger.info(f"   LoRA explicitly disabled with --no_lora")
+            args.use_lora = False
         if learning_rate is None:
             learning_rate = 1e-6
             logger.info(f"   Setting learning rate to {learning_rate}")
