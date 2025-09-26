@@ -332,7 +332,7 @@ plots/
 
 # Large files that shouldn't be tracked
 *.zip
-*.tar.gz
+#*.tar.gz
 *.rar
 *.7z
 *.iso
