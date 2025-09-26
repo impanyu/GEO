@@ -19,8 +19,37 @@ from dataclasses import dataclass
 import pymongo
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv('../.env.local')
+# Load environment variables from multiple possible locations
+import os
+from pathlib import Path
+
+# Try loading from multiple locations
+env_paths = [
+    '../.env.local',  # From model_training directory
+    '.env.local',     # From current directory
+    '.env',           # Standard .env file
+]
+
+for env_path in env_paths:
+    if Path(env_path).exists():
+        load_dotenv(env_path)
+        print(f"✅ Loaded environment from: {env_path}")
+        break
+else:
+    print("⚠️ No .env file found. Make sure to set HF_TOKEN, MONGODB_URI, and OPENROUTER_API_KEY as environment variables.")
+
+# Debug: Check if critical environment variables are loaded
+hf_token_check = os.getenv('HF_TOKEN')
+if hf_token_check:
+    print(f"✅ HF_TOKEN loaded: {hf_token_check[:10]}...")
+else:
+    print("❌ HF_TOKEN not found in environment variables")
+
+mongodb_uri_check = os.getenv('MONGODB_URI')
+if mongodb_uri_check:
+    print(f"✅ MONGODB_URI loaded: {mongodb_uri_check[:20]}...")
+else:
+    print("❌ MONGODB_URI not found in environment variables")
 
 # MongoDB connection setup
 import urllib.parse
@@ -74,12 +103,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 import requests
-from dotenv import load_dotenv
-
 from reward_model import RewardModel, TrainingConfig as RewardConfig
-
-# Load environment variables
-load_dotenv('../.env.local')
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -219,17 +243,20 @@ class RewardCalculator:
         
         # Get HF token for authenticated models
         hf_token = os.getenv('HF_TOKEN')
+        tokenizer_kwargs = {}
+        if hf_token:
+            tokenizer_kwargs['token'] = hf_token
         
         # Also initialize the tokenizer for consistent inference
         if "llama" in config.model_name.lower():
-            from transformers import LlamaTokenizer
-            self.reward_tokenizer = LlamaTokenizer.from_pretrained(config.model_name, token=hf_token)
+            from transformers import AutoTokenizer
+            self.reward_tokenizer = AutoTokenizer.from_pretrained(config.model_name, **tokenizer_kwargs)
         elif "gpt2" in config.model_name.lower():
             from transformers import GPT2Tokenizer
-            self.reward_tokenizer = GPT2Tokenizer.from_pretrained(config.model_name, token=hf_token)
+            self.reward_tokenizer = GPT2Tokenizer.from_pretrained(config.model_name, **tokenizer_kwargs)
         else:
             from transformers import AutoTokenizer
-            self.reward_tokenizer = AutoTokenizer.from_pretrained(config.model_name, token=hf_token)
+            self.reward_tokenizer = AutoTokenizer.from_pretrained(config.model_name, **tokenizer_kwargs)
         
         # Set pad token if not exists
         if self.reward_tokenizer.pad_token is None:
@@ -384,19 +411,22 @@ class GRPOModel(nn.Module):
         
         # Get HF token for authenticated models
         hf_token = os.getenv('HF_TOKEN')
+        model_kwargs = {}
+        if hf_token:
+            model_kwargs['token'] = hf_token
         
         if "llama" in model_name.lower():
             self.backbone = LlamaForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                 device_map="auto" if torch.cuda.is_available() else None,
-                token=hf_token
+                **model_kwargs
             )
         else:
             # Generic causal LM (GPT-2, DialoGPT, etc.)
             self.backbone = AutoModelForCausalLM.from_pretrained(
                 model_name,
-                token=hf_token
+                **model_kwargs
             )
         
         # No value head needed for pure GRPO!
@@ -457,12 +487,17 @@ class GRPOTrainer:
         hf_token = os.getenv('HF_TOKEN')
         
         # Initialize tokenizer based on model type
+        tokenizer_kwargs = {}
+        if hf_token:
+            tokenizer_kwargs['token'] = hf_token
+            
         if "llama" in config.model_name.lower():
-            self.tokenizer = LlamaTokenizer.from_pretrained(config.model_name, token=hf_token)
+            # Use AutoTokenizer for better compatibility with Llama models
+            self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, **tokenizer_kwargs)
         elif "gpt2" in config.model_name.lower():
-            self.tokenizer = GPT2Tokenizer.from_pretrained(config.model_name, token=hf_token)
+            self.tokenizer = GPT2Tokenizer.from_pretrained(config.model_name, **tokenizer_kwargs)
         else:
-            self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, token=hf_token)
+            self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, **tokenizer_kwargs)
         
         # Set pad token if not exists
         if self.tokenizer.pad_token is None:
