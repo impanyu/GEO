@@ -70,31 +70,16 @@ class ModelInference:
         # Load model - use GRPOModel with appropriate parameters
         use_lora = getattr(config, 'use_lora', False)
         use_qlora = getattr(config, 'use_qlora', False)
-        model = GRPOModel(config.model_name, use_lora=use_lora, use_qlora=use_qlora, distributed=False)
         
-        # Load state dict and move to single device
+        # Create model without device_map to avoid multi-GPU distribution
+        model = GRPOModel(config.model_name, use_lora=use_lora, use_qlora=use_qlora, distributed=False, force_single_device=True)
+        
+        # Load state dict
         state_dict = checkpoint['model_state_dict']
         model.load_state_dict(state_dict)
         
-        # Force model to single device for inference
+        # Move entire model to single device
         model.to(self.device)
-        
-        # If model has device_map, remove it to force single device
-        # Handle both regular models and LoRA models
-        backbone = model.backbone
-        try:
-            if hasattr(backbone, 'hf_device_map'):
-                delattr(backbone, 'hf_device_map')
-        except AttributeError:
-            pass  # Attribute doesn't exist, that's fine
-        
-        try:
-            if hasattr(backbone, 'base_model') and hasattr(backbone.base_model, 'hf_device_map'):
-                # For LoRA models, check the base model
-                delattr(backbone.base_model, 'hf_device_map')
-        except AttributeError:
-            pass  # Attribute doesn't exist, that's fine
-        
         model.eval()
         
         return model, tokenizer

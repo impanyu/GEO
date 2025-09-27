@@ -453,12 +453,13 @@ class RewardCalculator:
 class GRPOModel(nn.Module):
     """Pure GRPO model for sentence modification - no critic/value function"""
     
-    def __init__(self, model_name: str, use_lora: bool = False, use_qlora: bool = False, distributed: bool = False):
+    def __init__(self, model_name: str, use_lora: bool = False, use_qlora: bool = False, distributed: bool = False, force_single_device: bool = False):
         super().__init__()
         self.model_name = model_name
         self.use_lora = use_lora
         self.use_qlora = use_qlora
         self.distributed = distributed
+        self.force_single_device = force_single_device
         
         # Load model based on architecture
         logger.info(f"Loading GRPO model: {model_name}")
@@ -522,16 +523,20 @@ class GRPOModel(nn.Module):
                     )
                     logger.info("✅ QLoRA: Loaded 4-bit quantized model (should fit on single GPU)")
                 else:
-                    # For single GPU: Always use device_map for memory efficiency
+                    # For single GPU: Use device_map unless forced to single device
+                    device_map_setting = None if self.force_single_device else ("auto" if torch.cuda.is_available() else None)
                     self.backbone = LlamaForCausalLM.from_pretrained(
                         model_name,
                         torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                        device_map="auto" if torch.cuda.is_available() else None,
+                        device_map=device_map_setting,
                         attn_implementation="flash_attention_2",
                         low_cpu_mem_usage=True,
                         **model_kwargs
                     )
-                    logger.info("✅ Single GPU: Using device_map='auto' for memory efficiency")
+                    if self.force_single_device:
+                        logger.info("✅ Single GPU: Forced single device (no device_map)")
+                    else:
+                        logger.info("✅ Single GPU: Using device_map='auto' for memory efficiency")
                 logger.info("✅ Using Flash Attention 2 for memory efficiency")
             except Exception as e:
                 logger.warning(f"⚠️ Flash Attention 2 not available: {e}")
@@ -565,15 +570,19 @@ class GRPOModel(nn.Module):
                     )
                     logger.info("✅ QLoRA fallback: Loaded 4-bit quantized model")
                 else:
-                    # Single GPU fallback: Always use device_map
+                    # Single GPU fallback: Use device_map unless forced to single device
+                    device_map_setting = None if self.force_single_device else ("auto" if torch.cuda.is_available() else None)
                     self.backbone = LlamaForCausalLM.from_pretrained(
                         model_name,
                         torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                        device_map="auto" if torch.cuda.is_available() else None,
+                        device_map=device_map_setting,
                         low_cpu_mem_usage=True,
                         **model_kwargs
                     )
-                    logger.info("✅ Single GPU fallback: Using device_map='auto'")
+                    if self.force_single_device:
+                        logger.info("✅ Single GPU fallback: Forced single device (no device_map)")
+                    else:
+                        logger.info("✅ Single GPU fallback: Using device_map='auto'")
         else:
             # Generic causal LM (GPT-2, DialoGPT, etc.)
             self.backbone = AutoModelForCausalLM.from_pretrained(
