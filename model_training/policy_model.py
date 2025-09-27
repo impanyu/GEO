@@ -101,7 +101,8 @@ from transformers import (
     GPT2LMHeadModel,
     GPT2Tokenizer,
     get_linear_schedule_with_warmup,
-    set_seed
+    set_seed,
+    BitsAndBytesConfig
 )
 import matplotlib.pyplot as plt
 import numpy as np
@@ -189,6 +190,7 @@ class GRPOConfig:
     output_dir: str = "./grpo_model_output"
     save_every: int = 1
     use_lora: bool = False  # Added for large model support
+    use_qlora: bool = False  # QLoRA for extreme memory efficiency
     gradient_accumulation_steps: int = 1  # Added for large models
     baseline_tau: float = 0.95  # Exponential moving average for baseline
     num_samples_per_input: int = 5  # Number of sequences to sample per input
@@ -451,10 +453,11 @@ class RewardCalculator:
 class GRPOModel(nn.Module):
     """Pure GRPO model for sentence modification - no critic/value function"""
     
-    def __init__(self, model_name: str, use_lora: bool = False, distributed: bool = False):
+    def __init__(self, model_name: str, use_lora: bool = False, use_qlora: bool = False, distributed: bool = False):
         super().__init__()
         self.model_name = model_name
         self.use_lora = use_lora
+        self.use_qlora = use_qlora
         self.distributed = distributed
         
         # Load model based on architecture
@@ -466,15 +469,32 @@ class GRPOModel(nn.Module):
         if hf_token:
             model_kwargs['token'] = hf_token
         
-        if "llama" in model_name.lower():
-            # Choose loading strategy based on distributed training requirements
+        # Setup QLoRA quantization config if enabled
+        quantization_config = None
+        if use_qlora:
             try:
-                if distributed:
-                    # For multi-GPU: Try loading without device_map first for DDP compatibility
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",  # Normal Float 4-bit
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True,  # Double quantization for extra memory savings
+                )
+                model_kwargs['quantization_config'] = quantization_config
+                logger.info("🔥 QLoRA enabled: 4-bit quantization with double quantization")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to setup QLoRA quantization: {e}")
+                logger.info("💡 Install bitsandbytes: pip install bitsandbytes")
+                use_qlora = False
+        
+        if "llama" in model_name.lower():
+            # Choose loading strategy based on distributed training and QLoRA requirements
+            try:
+                if distributed and not use_qlora:
+                    # For multi-GPU without QLoRA: Try loading without device_map first for DDP compatibility
                     try:
                         self.backbone = LlamaForCausalLM.from_pretrained(
                             model_name,
-                            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                             attn_implementation="flash_attention_2",
                             low_cpu_mem_usage=True,
                             **model_kwargs
@@ -484,18 +504,28 @@ class GRPOModel(nn.Module):
                         logger.info("⚠️ Model too large for single GPU, falling back to model sharding")
                         self.backbone = LlamaForCausalLM.from_pretrained(
                             model_name,
-                            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                             device_map="auto" if torch.cuda.is_available() else None,
                             attn_implementation="flash_attention_2",
                             low_cpu_mem_usage=True,
                             **model_kwargs
                         )
                         logger.info("✅ Multi-GPU: Using device_map='auto' for model sharding (slower)")
+                elif use_qlora:
+                    # QLoRA: Load with 4-bit quantization, likely fits on single GPU for DDP
+                    self.backbone = LlamaForCausalLM.from_pretrained(
+                        model_name,
+                        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                        attn_implementation="flash_attention_2",
+                        low_cpu_mem_usage=True,
+                        **model_kwargs
+                    )
+                    logger.info("✅ QLoRA: Loaded 4-bit quantized model (should fit on single GPU)")
                 else:
                     # For single GPU: Always use device_map for memory efficiency
                     self.backbone = LlamaForCausalLM.from_pretrained(
                         model_name,
-                        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                         device_map="auto" if torch.cuda.is_available() else None,
                         attn_implementation="flash_attention_2",
                         low_cpu_mem_usage=True,
@@ -506,12 +536,12 @@ class GRPOModel(nn.Module):
             except Exception as e:
                 logger.warning(f"⚠️ Flash Attention 2 not available: {e}")
                 logger.info("🔄 Falling back to standard attention")
-                if distributed:
+                if distributed and not use_qlora:
                     # Multi-GPU fallback: Try DDP first, then model sharding
                     try:
                         self.backbone = LlamaForCausalLM.from_pretrained(
                             model_name,
-                            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                             low_cpu_mem_usage=True,
                             **model_kwargs
                         )
@@ -519,17 +549,26 @@ class GRPOModel(nn.Module):
                     except torch.cuda.OutOfMemoryError:
                         self.backbone = LlamaForCausalLM.from_pretrained(
                             model_name,
-                            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                             device_map="auto" if torch.cuda.is_available() else None,
                             low_cpu_mem_usage=True,
                             **model_kwargs
                         )
                         logger.info("✅ Multi-GPU fallback: Using device_map='auto' for model sharding (slower)")
+                elif use_qlora:
+                    # QLoRA fallback: Load with 4-bit quantization
+                    self.backbone = LlamaForCausalLM.from_pretrained(
+                        model_name,
+                        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                        low_cpu_mem_usage=True,
+                        **model_kwargs
+                    )
+                    logger.info("✅ QLoRA fallback: Loaded 4-bit quantized model")
                 else:
                     # Single GPU fallback: Always use device_map
                     self.backbone = LlamaForCausalLM.from_pretrained(
                         model_name,
-                        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                         device_map="auto" if torch.cuda.is_available() else None,
                         low_cpu_mem_usage=True,
                         **model_kwargs
@@ -549,16 +588,21 @@ class GRPOModel(nn.Module):
             self.backbone.gradient_checkpointing_enable()
             logger.info("✅ Gradient checkpointing enabled for memory efficiency")
         
-        # Optional: Use LoRA for large models to reduce memory
-        if use_lora:
-            self._setup_lora()
+        # Optional: Use LoRA or QLoRA for large models to reduce memory
+        if use_lora or use_qlora:
+            self._setup_lora(use_qlora=use_qlora)
         
         logger.info(f"GRPO model loaded with {sum(p.numel() for p in self.parameters())} parameters")
     
-    def _setup_lora(self):
-        """Setup LoRA (Low-Rank Adaptation) for memory efficiency"""
+    def _setup_lora(self, use_qlora: bool = False):
+        """Setup LoRA (Low-Rank Adaptation) or QLoRA for memory efficiency"""
         try:
-            from peft import get_peft_model, LoraConfig, TaskType
+            from peft import get_peft_model, LoraConfig, TaskType, prepare_model_for_kbit_training
+            
+            # For QLoRA, prepare model for k-bit training
+            if use_qlora:
+                self.backbone = prepare_model_for_kbit_training(self.backbone)
+                logger.info("✅ Model prepared for k-bit training (QLoRA)")
             
             # Configure LoRA based on model type
             if "llama" in self.model_name.lower():
@@ -566,21 +610,30 @@ class GRPOModel(nn.Module):
             else:
                 target_modules = ["q_proj", "v_proj", "k_proj", "o_proj"]
             
+            # Use smaller rank for QLoRA to maximize memory savings
+            rank = 8 if use_qlora else 16
+            alpha = rank * 2  # Common practice: alpha = 2 * rank
+            
             lora_config = LoraConfig(
                 task_type=TaskType.CAUSAL_LM,
                 inference_mode=False,
-                r=16,  # Rank
-                lora_alpha=32,
+                r=rank,  # Rank (smaller for QLoRA)
+                lora_alpha=alpha,
                 lora_dropout=0.1,
-                target_modules=target_modules
+                target_modules=target_modules,
+                bias="none"  # Important for QLoRA
             )
             
             self.backbone = get_peft_model(self.backbone, lora_config)
-            logger.info("✅ LoRA enabled for memory efficiency")
+            
+            if use_qlora:
+                logger.info(f"✅ QLoRA enabled: 4-bit quantization + LoRA (rank={rank}) for extreme memory efficiency")
+            else:
+                logger.info(f"✅ LoRA enabled: rank={rank} for memory efficiency")
             
         except ImportError:
             logger.warning("⚠️ PEFT not installed. Install with: pip install peft")
-            logger.warning("   Continuing without LoRA - may require more memory")
+            logger.warning("   Continuing without LoRA/QLoRA - may require more memory")
     
     def forward(self, input_ids, attention_mask=None, labels=None):
         # Pure language model forward pass - no value head
@@ -639,14 +692,20 @@ class GRPOTrainer:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        # Auto-determine LoRA usage for large models (unless explicitly disabled)
+        # Auto-determine LoRA/QLoRA usage for large models (unless explicitly disabled)
         use_lora = config.use_lora
-        if not use_lora and "llama" in config.model_name.lower() and "8b" in config.model_name.lower():
+        use_qlora = config.use_qlora
+        
+        # QLoRA takes precedence over LoRA
+        if use_qlora:
+            use_lora = False  # QLoRA includes LoRA functionality
+            logger.info("🔥 QLoRA enabled - includes LoRA with 4-bit quantization")
+        elif not use_lora and "llama" in config.model_name.lower() and "8b" in config.model_name.lower():
             use_lora = True
             logger.info("🔥 Auto-enabling LoRA for Llama 8B model")
         
         # Initialize GRPO model (no value head)
-        self.model = GRPOModel(config.model_name, use_lora=use_lora, distributed=config.distributed)
+        self.model = GRPOModel(config.model_name, use_lora=use_lora, use_qlora=use_qlora, distributed=config.distributed)
         
         # Setup multi-GPU training - use model sharding for large models
         if config.distributed:
@@ -1379,6 +1438,7 @@ def train_worker(rank: int, world_size: int, args, train_data: List[Dict]):
         learning_rate=args.learning_rate if args.learning_rate else (1e-6 if "llama" in args.model.lower() and "8b" in args.model.lower() else 1e-5),
         output_dir=args.output_dir,
         use_lora=args.use_lora,
+        use_qlora=args.use_qlora,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         max_length=args.max_length,
         num_samples_per_input=args.num_samples_per_input,
@@ -1441,9 +1501,14 @@ def main():
         help='Use LoRA for memory-efficient training (auto-enabled for 8B+ models)'
     )
     parser.add_argument(
+        '--use_qlora',
+        action='store_true',
+        help='Use QLoRA (4-bit quantization + LoRA) for extreme memory efficiency'
+    )
+    parser.add_argument(
         '--no_lora',
         action='store_true',
-        help='Force disable LoRA even for large models'
+        help='Force disable LoRA/QLoRA even for large models'
     )
     parser.add_argument(
         '--gradient_accumulation_steps',
@@ -1498,12 +1563,16 @@ def main():
         if world_size > 1 and not args.use_smaller_model:
             logger.info(f"   💡 Tip: Use --use_smaller_model for faster multi-GPU training")
             logger.info(f"   🐌 Large models (8B+) may be slower with model parallelism")
-        if not args.use_lora and not args.no_lora:
+        if args.use_qlora:
+            logger.info(f"   QLoRA explicitly enabled - includes 4-bit quantization + LoRA")
+            args.use_lora = False  # QLoRA replaces LoRA
+        elif not args.use_lora and not args.no_lora:
             logger.info(f"   Auto-enabling LoRA")
             args.use_lora = True
         elif args.no_lora:
-            logger.info(f"   LoRA explicitly disabled with --no_lora")
+            logger.info(f"   LoRA/QLoRA explicitly disabled with --no_lora")
             args.use_lora = False
+            args.use_qlora = False
         if learning_rate is None:
             learning_rate = 1e-6
             logger.info(f"   Setting learning rate to {learning_rate}")
@@ -1556,6 +1625,7 @@ def main():
             learning_rate=learning_rate,
             output_dir=args.output_dir,
             use_lora=args.use_lora,
+            use_qlora=args.use_qlora,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             max_length=args.max_length,
             num_samples_per_input=args.num_samples_per_input,

@@ -8,9 +8,9 @@ accelerate>=0.20.0
 datasets>=2.12.0
 evaluate>=0.4.0
 
-# Memory optimization for large models
+# Memory optimization for large models (LoRA and QLoRA)
 peft>=0.4.0
-bitsandbytes>=0.41.0
+bitsandbytes>=0.41.0  # Required for QLoRA 4-bit quantization
 
 # Additional model support
 sentencepiece>=0.1.99
