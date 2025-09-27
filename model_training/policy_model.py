@@ -218,7 +218,7 @@ class SentenceModificationDataset(Dataset):
         
         # Create input prompt for sentence modification
         sentences_json = json.dumps(item['sentences'])
-        prompt = f"Modify the following sentences to improve brand visibility:\nSentences: {sentences_json}\nDimension: {item['dimension']}\nDomain: {item['domain']}\nModified sentences:"
+        prompt = f"For Dimension: {item['dimension']}\nDomain: {item['domain']}\nModify the following sentences to improve brand visibility:\nSentences: {sentences_json}\n Output the modified sentences as json list after semicolon:"
         
         # Tokenize with consistent padding
         encoding = self.tokenizer(
@@ -863,16 +863,39 @@ class GRPOTrainer:
                 generated_text = self.tokenizer.decode(generated_sequence, skip_special_tokens=True)
                 
                 try:
-                    if "Modified sentences:" in generated_text:
-                        json_part = generated_text.split("Modified sentences:")[-1].strip()
+                    # Look for JSON list after semicolon (new format)
+                    if ":" in generated_text:
+                        # Find the last semicolon and get everything after it
+                        semicolon_parts = generated_text.split(":")
+                        json_part = semicolon_parts[-1].strip()
+                        
+                        # Try to parse as JSON
                         modified_sentences = json.loads(json_part)
                         if isinstance(modified_sentences, list):
                             sentences = modified_sentences
                         else:
                             sentences = [str(modified_sentences)]
                     else:
+                        # Fallback: use original sentences if parsing fails
                         sentences = batch['original_sentences'][i]
-                except:
+                except json.JSONDecodeError:
+                    # If JSON parsing fails, try to extract any list-like structure
+                    try:
+                        # Look for bracket patterns like ["sentence1", "sentence2"]
+                        import re
+                        bracket_match = re.search(r'\[.*?\]', generated_text, re.DOTALL)
+                        if bracket_match:
+                            json_part = bracket_match.group(0)
+                            modified_sentences = json.loads(json_part)
+                            if isinstance(modified_sentences, list):
+                                sentences = modified_sentences
+                            else:
+                                sentences = [str(modified_sentences)]
+                        else:
+                            sentences = batch['original_sentences'][i]
+                    except:
+                        sentences = batch['original_sentences'][i]
+                except Exception:
                     sentences = batch['original_sentences'][i]
                 
                 # Step 4: Calculate reward using calculate_rewards_tmp
