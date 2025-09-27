@@ -82,11 +82,18 @@ class ModelInference:
         # If model has device_map, remove it to force single device
         # Handle both regular models and LoRA models
         backbone = model.backbone
-        if hasattr(backbone, 'hf_device_map'):
-            delattr(backbone, 'hf_device_map')
-        elif hasattr(backbone, 'base_model') and hasattr(backbone.base_model, 'hf_device_map'):
-            # For LoRA models, check the base model
-            delattr(backbone.base_model, 'hf_device_map')
+        try:
+            if hasattr(backbone, 'hf_device_map'):
+                delattr(backbone, 'hf_device_map')
+        except AttributeError:
+            pass  # Attribute doesn't exist, that's fine
+        
+        try:
+            if hasattr(backbone, 'base_model') and hasattr(backbone.base_model, 'hf_device_map'):
+                # For LoRA models, check the base model
+                delattr(backbone.base_model, 'hf_device_map')
+        except AttributeError:
+            pass  # Attribute doesn't exist, that's fine
         
         model.eval()
         
