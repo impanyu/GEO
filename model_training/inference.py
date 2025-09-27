@@ -13,7 +13,7 @@ import os
 import torch
 from transformers import AutoTokenizer
 from reward_model import RewardModel
-from policy_model import GRPOModel
+from policy_model import GRPOModel, GRPOConfig
 
 class ModelInference:
     """Inference wrapper for trained models"""
