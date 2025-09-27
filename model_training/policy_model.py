@@ -1245,8 +1245,8 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
             if self.is_main_process:
                 logger.info(f"GRPO Epoch {epoch}/{self.config.num_epochs}")
             
-            # Set epoch for DistributedSampler
-            if self.config.distributed:
+            # Set epoch for DistributedSampler (only for data parallelism)
+            if self.config.distributed and 'sampler' in locals():
                 sampler.set_epoch(epoch)
             
             avg_reward = await self.train_epoch(data_loader, optimizer)
@@ -1449,9 +1449,6 @@ def main():
         if args.gradient_accumulation_steps <= 4:
             logger.info(f"   Setting gradient accumulation steps to 8 for memory efficiency")
             args.gradient_accumulation_steps = 8
-        if args.batch_size > 1:
-            logger.info(f"   Reducing batch size from {args.batch_size} to 1 for memory efficiency")
-            args.batch_size = 1
         if not args.use_lora and not args.no_lora:
             logger.info(f"   Auto-enabling LoRA")
             args.use_lora = True
