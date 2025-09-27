@@ -293,9 +293,9 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
         iterations: int = 3,
         brand_name: str = "Unknown Brand"
     ) -> dict:
-        """Iteratively optimize sentences using both models"""
-        if self.reward_model is None or self.policy_model is None:
-            raise ValueError("Both models must be loaded for optimization")
+        """Iteratively optimize sentences using policy model and OpenRouter API"""
+        if self.policy_model is None:
+            raise ValueError("Policy model must be loaded for optimization")
         
         results = {
             'original_sentences': sentences,
