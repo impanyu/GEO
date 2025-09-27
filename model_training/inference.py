@@ -41,7 +41,7 @@ class ModelInference:
     
     def load_reward_model(self, model_path: str):
         """Load trained reward model"""
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
         config = checkpoint['config']
         
         # Load tokenizer
@@ -59,7 +59,7 @@ class ModelInference:
     
     def load_policy_model(self, model_path: str):
         """Load trained policy model"""
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
         config = checkpoint['config']
         
         # Load tokenizer
