@@ -1484,6 +1484,9 @@ def main():
     
     args = parser.parse_args()
     
+    # Determine world size first
+    world_size = args.world_size if args.world_size is not None else args.num_gpus
+    
     # Auto-adjust settings for large models
     learning_rate = args.learning_rate
     if "llama" in args.model.lower() and "8b" in args.model.lower():
@@ -1511,9 +1514,6 @@ def main():
     if args.use_smaller_model:
         args.model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # Much faster for multi-GPU
         logger.info(f"🚀 Using smaller model for faster training: {args.model}")
-    
-    # Determine world size
-    world_size = args.world_size if args.world_size is not None else args.num_gpus
     
     # Load training data from MongoDB (only once, before spawning processes)
     try:
