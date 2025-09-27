@@ -71,8 +71,18 @@ class ModelInference:
         use_lora = getattr(config, 'use_lora', False)
         use_qlora = getattr(config, 'use_qlora', False)
         model = GRPOModel(config.model_name, use_lora=use_lora, use_qlora=use_qlora, distributed=False)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Load state dict and move to single device
+        state_dict = checkpoint['model_state_dict']
+        model.load_state_dict(state_dict)
+        
+        # Force model to single device for inference
         model.to(self.device)
+        
+        # If model has device_map, remove it to force single device
+        if hasattr(model.backbone, 'hf_device_map'):
+            delattr(model.backbone, 'hf_device_map')
+        
         model.eval()
         
         return model, tokenizer
@@ -248,19 +258,11 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
         
         # Generate
         with torch.no_grad():
-            # Get the actual model (unwrap any wrappers)
-            actual_model = self.policy_model
-            
-            # For models with device_map, use the backbone model directly
-            if hasattr(actual_model, 'backbone'):
-                actual_model = actual_model.backbone
-            
             # Move inputs to the model's device
-            model_device = next(actual_model.parameters()).device
-            input_ids = encoding['input_ids'].to(model_device)
-            attention_mask = encoding['attention_mask'].to(model_device)
+            input_ids = encoding['input_ids'].to(self.device)
+            attention_mask = encoding['attention_mask'].to(self.device)
             
-            outputs = actual_model.generate(
+            outputs = self.policy_model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 max_new_tokens=max_new_tokens,
