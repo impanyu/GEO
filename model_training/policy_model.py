@@ -469,49 +469,34 @@ class GRPOModel(nn.Module):
         if "llama" in model_name.lower():
             # Choose loading strategy based on distributed training requirements
             try:
+                # Always use device_map="auto" for model sharding - essential for large models
+                self.backbone = LlamaForCausalLM.from_pretrained(
+                    model_name,
+                    dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                    device_map="auto" if torch.cuda.is_available() else None,
+                    attn_implementation="flash_attention_2",
+                    low_cpu_mem_usage=True,
+                    **model_kwargs
+                )
                 if distributed:
-                    # For multi-GPU: Load on GPU 0, let DataParallel handle distribution
-                    self.backbone = LlamaForCausalLM.from_pretrained(
-                        model_name,
-                        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                        attn_implementation="flash_attention_2",
-                        low_cpu_mem_usage=True,
-                        **model_kwargs
-                    )
-                    logger.info("✅ Multi-GPU: Loaded on single device for DataParallel")
+                    logger.info("✅ Multi-GPU: Using device_map='auto' for model sharding")
                 else:
-                    # For single GPU: Use device_map for memory efficiency
-                    self.backbone = LlamaForCausalLM.from_pretrained(
-                        model_name,
-                        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                        device_map="auto" if torch.cuda.is_available() else None,
-                        attn_implementation="flash_attention_2",
-                        low_cpu_mem_usage=True,
-                        **model_kwargs
-                    )
-                    logger.info("✅ Single GPU: Using device_map='auto'")
+                    logger.info("✅ Single GPU: Using device_map='auto' for memory efficiency")
                 logger.info("✅ Using Flash Attention 2 for memory efficiency")
             except Exception as e:
                 logger.warning(f"⚠️ Flash Attention 2 not available: {e}")
                 logger.info("🔄 Falling back to standard attention")
+                # Fallback: Always use device_map="auto" for model sharding
+                self.backbone = LlamaForCausalLM.from_pretrained(
+                    model_name,
+                    dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                    device_map="auto" if torch.cuda.is_available() else None,
+                    low_cpu_mem_usage=True,
+                    **model_kwargs
+                )
                 if distributed:
-                    # Multi-GPU fallback: Load on single device for DataParallel
-                    self.backbone = LlamaForCausalLM.from_pretrained(
-                        model_name,
-                        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                        low_cpu_mem_usage=True,
-                        **model_kwargs
-                    )
-                    logger.info("✅ Multi-GPU fallback: Loaded on single device for DataParallel")
+                    logger.info("✅ Multi-GPU fallback: Using device_map='auto' for model sharding")
                 else:
-                    # Single GPU fallback: Use device_map for memory efficiency
-                    self.backbone = LlamaForCausalLM.from_pretrained(
-                        model_name,
-                        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                        device_map="auto" if torch.cuda.is_available() else None,
-                        low_cpu_mem_usage=True,
-                        **model_kwargs
-                    )
                     logger.info("✅ Single GPU fallback: Using device_map='auto'")
         else:
             # Generic causal LM (GPT-2, DialoGPT, etc.)
@@ -626,23 +611,31 @@ class GRPOTrainer:
         # Initialize GRPO model (no value head)
         self.model = GRPOModel(config.model_name, use_lora=use_lora, distributed=config.distributed)
         
-        # Setup multi-GPU training
+        # Setup multi-GPU training - use model sharding for large models
         if config.distributed:
-            try:
-                # Try to move model to GPU 0 first, then wrap with DataParallel
-                self.model.to(torch.device('cuda:0'))
-                available_gpus = list(range(torch.cuda.device_count()))
-                self.model = torch.nn.DataParallel(self.model, device_ids=available_gpus)
+            # Check if model uses device_map (sharded across devices)
+            model_uses_device_map = hasattr(self.model.backbone, 'hf_device_map')
+            
+            if model_uses_device_map:
+                # Model is sharded - can't use DDP, but can use accelerate for multi-GPU coordination
                 if self.is_main_process:
-                    logger.info(f"✅ Model moved to cuda:0 and wrapped with DataParallel across {len(available_gpus)} GPUs")
-                    logger.info(f"🎯 Using DataParallel for multi-GPU training")
-            except torch.cuda.OutOfMemoryError as e:
-                if self.is_main_process:
-                    logger.error(f"❌ Model too large for single GPU: {e}")
-                    logger.info("🔄 Falling back to single GPU training with device_map")
-                # Fall back to single GPU training
-                config.distributed = False
-                self.is_main_process = True
+                    logger.info(f"✅ Model sharded across devices - using model parallelism")
+                    logger.info(f"🎯 Each process will coordinate on sharded model")
+                # Each process works with the same sharded model
+            else:
+                # Model fits on single GPU - can use standard DDP
+                try:
+                    self.model.to(self.device)
+                    self.model = DDP(self.model, device_ids=[config.local_rank], output_device=config.local_rank)
+                    if self.is_main_process:
+                        logger.info(f"✅ Model wrapped with DistributedDataParallel on GPU {config.local_rank}")
+                except torch.cuda.OutOfMemoryError as e:
+                    if self.is_main_process:
+                        logger.error(f"❌ Model too large for single GPU: {e}")
+                        logger.info("🔄 Falling back to single GPU training with device_map")
+                    # Fall back to single GPU training
+                    config.distributed = False
+                    self.is_main_process = True
         
         if not config.distributed:
             # Single GPU or CPU training
@@ -1077,6 +1070,16 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
             # Update every accumulation_steps or at the end
             if (step + 1) % accumulation_steps == 0 or (step + 1) == len(data_loader):
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+                
+                # Synchronize gradients for model parallelism
+                if self.config.distributed and hasattr(self.model.backbone, 'hf_device_map'):
+                    # For model parallelism, ensure gradient sync across processes
+                    if dist.is_initialized():
+                        for param in self.model.parameters():
+                            if param.grad is not None:
+                                dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+                                param.grad.data /= self.config.world_size
+                
                 optimizer.step()
                 optimizer.zero_grad()
         
@@ -1196,18 +1199,35 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
         
         # Use DistributedSampler for multi-GPU training
         if self.config.distributed:
-            sampler = DistributedSampler(
-                dataset, 
-                num_replicas=self.config.world_size, 
-                rank=self.config.rank,
-                shuffle=True
-            )
-            data_loader = DataLoader(
-                dataset, 
-                batch_size=self.config.batch_size, 
-                sampler=sampler,
-                collate_fn=self.collate_fn
-            )
+            # Check if model is sharded (model parallelism) or replicated (data parallelism)
+            model_uses_device_map = hasattr(self.model.backbone, 'hf_device_map') if not isinstance(self.model, DDP) else False
+            
+            if model_uses_device_map:
+                # Model parallelism: all processes work on the same data
+                data_loader = DataLoader(
+                    dataset, 
+                    batch_size=self.config.batch_size, 
+                    shuffle=True,
+                    collate_fn=self.collate_fn
+                )
+                if self.is_main_process:
+                    logger.info("🎯 Using model parallelism - all processes process same data")
+            else:
+                # Data parallelism: split data across processes
+                sampler = DistributedSampler(
+                    dataset, 
+                    num_replicas=self.config.world_size, 
+                    rank=self.config.rank,
+                    shuffle=True
+                )
+                data_loader = DataLoader(
+                    dataset, 
+                    batch_size=self.config.batch_size, 
+                    sampler=sampler,
+                    collate_fn=self.collate_fn
+                )
+                if self.is_main_process:
+                    logger.info("🎯 Using data parallelism - split data across processes")
         else:
             data_loader = DataLoader(
                 dataset, 
