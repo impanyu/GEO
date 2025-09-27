@@ -13,7 +13,7 @@ import os
 import torch
 from transformers import AutoTokenizer
 from reward_model import RewardModel
-from policy_model import PolicyModel
+from policy_model import GRPOModel
 
 class ModelInference:
     """Inference wrapper for trained models"""
@@ -67,8 +67,10 @@ class ModelInference:
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         
-        # Load model
-        model = PolicyModel(config.model_name)
+        # Load model - use GRPOModel with appropriate parameters
+        use_lora = getattr(config, 'use_lora', False)
+        use_qlora = getattr(config, 'use_qlora', False)
+        model = GRPOModel(config.model_name, use_lora=use_lora, use_qlora=use_qlora, distributed=False)
         model.load_state_dict(checkpoint['model_state_dict'])
         model.to(self.device)
         model.eval()
@@ -100,6 +102,126 @@ class ModelInference:
             
             prediction = self.reward_model(input_ids, attention_mask)
             return prediction.item()
+    
+    async def predict_visibility_tmp(self, sentences: list, dimension: str, domain: str, brand_name: str = "Unknown Brand") -> float:
+        """Predict visibility score using OpenRouter GPT-4o API (same as policy model)"""
+        try:
+            # Skip empty sentence lists
+            if not sentences or len(sentences) == 0:
+                return 0.0
+            
+            # Format sentences for evaluation
+            sentences_text = '\n'.join([f"- {sentence}" for sentence in sentences])
+            
+            # Create evaluation prompt (same as policy model)
+            prompt = f"""
+You are an AI content quality evaluator. Your task is to assess the quality and usefulness of content sentences.
+
+CONTEXT:
+- Brand: {brand_name}
+- Content Dimension: {dimension}
+- Source Domain: {domain}
+
+CONTENT TO EVALUATE:
+{sentences_text}
+
+EVALUATION TASK:
+Rate the probability (0.0 to 1.0) that these sentences would be quoted or referenced by AI agents like ChatGPT when answering user questions about this brand or topic.
+
+QUALITY CRITERIA:
+1. Factual accuracy and informativeness
+2. Relevance to the brand and dimension
+3. Clarity and readability
+4. Usefulness for answering questions
+5. Credibility and trustworthiness
+6. Specificity vs vague generalities
+
+SCORING GUIDE:
+- 0.9-1.0: Exceptional quality - highly likely to be quoted
+- 0.7-0.8: Good quality - probably quoted for relevant queries  
+- 0.5-0.6: Average quality - might be quoted occasionally
+- 0.3-0.4: Below average - unlikely to be quoted
+- 0.0-0.2: Poor quality - very unlikely to be quoted
+
+Return ONLY a single floating point number between 0.0 and 1.0 representing the probability score.
+"""
+
+            # Call OpenRouter GPT-4o API
+            visibility_score = await self._call_openrouter_for_reward(prompt)
+            return visibility_score
+            
+        except Exception as e:
+            print(f"Error calculating visibility score: {e}")
+            return 0.0
+    
+    async def _call_openrouter_for_reward(self, prompt: str) -> float:
+        """
+        Call OpenRouter GPT-4o API to get reward score (same as policy model)
+        
+        Args:
+            prompt: Evaluation prompt for GPT-4o
+            
+        Returns:
+            Reward score between 0.0 and 1.0
+        """
+        try:
+            # Check for API key
+            openrouter_api_key = os.getenv('OPENROUTER_API_KEY')
+            if not openrouter_api_key:
+                print("OPENROUTER_API_KEY not found in environment")
+                return 0.0
+            
+            # Prepare request
+            headers = {
+                'Authorization': f'Bearer {openrouter_api_key}',
+                'Content-Type': 'application/json',
+                'HTTP-Referer': 'https://github.com/your-repo',
+                'X-Title': 'GEO Inference'
+            }
+            
+            data = {
+                'model': 'openai/gpt-4o',
+                'messages': [
+                    {
+                        'role': 'user',
+                        'content': prompt
+                    }
+                ],
+                'temperature': 0.1,
+                'max_tokens': 10  # We only need a single number
+            }
+            
+            # Make API call
+            import requests
+            response = requests.post(
+                'https://openrouter.ai/api/v1/chat/completions',
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                print(f"OpenRouter API error: {response.status_code} - {response.text}")
+                return 0.0
+            
+            result = response.json()
+            
+            # Extract and parse response
+            content = result.get('choices', [{}])[0].get('message', {}).get('content', '0.0')
+            
+            # Parse the floating point number
+            try:
+                reward_score = float(content.strip())
+                # Clamp to valid range
+                reward_score = max(0.0, min(1.0, reward_score))
+                return reward_score
+            except ValueError:
+                print(f"Could not parse reward score from: '{content}'")
+                return 0.0
+                
+        except Exception as e:
+            print(f"Error calling OpenRouter API: {e}")
+            return 0.0
     
     def generate_improved_sentences(
         self, 
@@ -155,12 +277,13 @@ class ModelInference:
             except:
                 return sentences  # Fallback on parsing error
     
-    def optimize_sentences(
+    async def optimize_sentences(
         self, 
         sentences: list, 
         dimension: str, 
         domain: str,
-        iterations: int = 3
+        iterations: int = 3,
+        brand_name: str = "Unknown Brand"
     ) -> dict:
         """Iteratively optimize sentences using both models"""
         if self.reward_model is None or self.policy_model is None:
@@ -176,16 +299,16 @@ class ModelInference:
         current_sentences = sentences
         
         for i in range(iterations):
-            # Predict current visibility
-            current_score = self.predict_visibility(current_sentences, dimension, domain)
+            # Predict current visibility using OpenRouter API
+            current_score = await self.predict_visibility_tmp(current_sentences, dimension, domain, brand_name)
             
             # Generate improved sentences
             improved_sentences = self.generate_improved_sentences(
                 current_sentences, dimension, domain
             )
             
-            # Predict improved visibility
-            improved_score = self.predict_visibility(improved_sentences, dimension, domain)
+            # Predict improved visibility using OpenRouter API
+            improved_score = await self.predict_visibility_tmp(improved_sentences, dimension, domain, brand_name)
             
             # Store iteration results
             results['iterations'].append({
@@ -205,11 +328,11 @@ class ModelInference:
                 print(f"Iteration {i+1}: No improvement (score: {improved_score:.4f})")
         
         results['final_sentences'] = current_sentences
-        results['final_score'] = self.predict_visibility(current_sentences, dimension, domain)
+        results['final_score'] = await self.predict_visibility_tmp(current_sentences, dimension, domain, brand_name)
         
         return results
 
-def main():
+async def main():
     """Main inference function"""
     parser = argparse.ArgumentParser(description="Run inference with trained models")
     
@@ -221,7 +344,7 @@ def main():
     )
     parser.add_argument(
         '--policy_model',
-        default='./policy_model_output/policy_model_epoch_5.pt',
+        default='./grpo_model_output/grpo_model_epoch_2.pt',
         help='Path to trained policy model'
     )
     
@@ -250,6 +373,11 @@ def main():
         required=True,
         help='Domain name'
     )
+    parser.add_argument(
+        '--brand_name',
+        default='Unknown Brand',
+        help='Brand name for visibility scoring'
+    )
     
     # Generation parameters
     parser.add_argument(
@@ -271,12 +399,13 @@ def main():
     print(f"📝 Sentences: {args.sentences}")
     print(f"🏷️ Dimension: {args.dimension}")
     print(f"🌐 Domain: {args.domain}")
+    print(f"🏢 Brand: {args.brand_name}")
     print("-" * 50)
     
     try:
         if args.task == 'predict':
-            # Predict visibility
-            score = inference.predict_visibility(args.sentences, args.dimension, args.domain)
+            # Predict visibility using OpenRouter API
+            score = await inference.predict_visibility_tmp(args.sentences, args.dimension, args.domain, args.brand_name)
             print(f"📊 Predicted Visibility Score: {score:.4f}")
         
         elif args.task == 'generate':
@@ -286,18 +415,17 @@ def main():
             )
             print(f"✨ Improved Sentences: {improved}")
             
-            # Also show scores if reward model available
-            if inference.reward_model:
-                original_score = inference.predict_visibility(args.sentences, args.dimension, args.domain)
-                improved_score = inference.predict_visibility(improved, args.dimension, args.domain)
-                print(f"📊 Original Score: {original_score:.4f}")
-                print(f"📊 Improved Score: {improved_score:.4f}")
-                print(f"📈 Improvement: {improved_score - original_score:.4f}")
+            # Also show scores using OpenRouter API
+            original_score = await inference.predict_visibility_tmp(args.sentences, args.dimension, args.domain, args.brand_name)
+            improved_score = await inference.predict_visibility_tmp(improved, args.dimension, args.domain, args.brand_name)
+            print(f"📊 Original Score: {original_score:.4f}")
+            print(f"📊 Improved Score: {improved_score:.4f}")
+            print(f"📈 Improvement: {improved_score - original_score:.4f}")
         
         elif args.task == 'optimize':
             # Iterative optimization
-            results = inference.optimize_sentences(
-                args.sentences, args.dimension, args.domain, args.iterations
+            results = await inference.optimize_sentences(
+                args.sentences, args.dimension, args.domain, args.iterations, args.brand_name
             )
             
             print(f"🚀 Optimization Results:")
@@ -318,4 +446,5 @@ def main():
     return 0
 
 if __name__ == "__main__":
-    exit(main())
+    import asyncio
+    exit(asyncio.run(main()))
