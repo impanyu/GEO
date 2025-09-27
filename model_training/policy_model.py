@@ -469,34 +469,71 @@ class GRPOModel(nn.Module):
         if "llama" in model_name.lower():
             # Choose loading strategy based on distributed training requirements
             try:
-                # Always use device_map="auto" for model sharding - essential for large models
-                self.backbone = LlamaForCausalLM.from_pretrained(
-                    model_name,
-                    dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                    device_map="auto" if torch.cuda.is_available() else None,
-                    attn_implementation="flash_attention_2",
-                    low_cpu_mem_usage=True,
-                    **model_kwargs
-                )
                 if distributed:
-                    logger.info("✅ Multi-GPU: Using device_map='auto' for model sharding")
+                    # For multi-GPU: Try loading without device_map first for DDP compatibility
+                    try:
+                        self.backbone = LlamaForCausalLM.from_pretrained(
+                            model_name,
+                            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                            attn_implementation="flash_attention_2",
+                            low_cpu_mem_usage=True,
+                            **model_kwargs
+                        )
+                        logger.info("✅ Multi-GPU: Loaded model for DDP (faster data parallelism)")
+                    except torch.cuda.OutOfMemoryError:
+                        logger.info("⚠️ Model too large for single GPU, falling back to model sharding")
+                        self.backbone = LlamaForCausalLM.from_pretrained(
+                            model_name,
+                            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                            device_map="auto" if torch.cuda.is_available() else None,
+                            attn_implementation="flash_attention_2",
+                            low_cpu_mem_usage=True,
+                            **model_kwargs
+                        )
+                        logger.info("✅ Multi-GPU: Using device_map='auto' for model sharding (slower)")
                 else:
+                    # For single GPU: Always use device_map for memory efficiency
+                    self.backbone = LlamaForCausalLM.from_pretrained(
+                        model_name,
+                        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                        device_map="auto" if torch.cuda.is_available() else None,
+                        attn_implementation="flash_attention_2",
+                        low_cpu_mem_usage=True,
+                        **model_kwargs
+                    )
                     logger.info("✅ Single GPU: Using device_map='auto' for memory efficiency")
                 logger.info("✅ Using Flash Attention 2 for memory efficiency")
             except Exception as e:
                 logger.warning(f"⚠️ Flash Attention 2 not available: {e}")
                 logger.info("🔄 Falling back to standard attention")
-                # Fallback: Always use device_map="auto" for model sharding
-                self.backbone = LlamaForCausalLM.from_pretrained(
-                    model_name,
-                    dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                    device_map="auto" if torch.cuda.is_available() else None,
-                    low_cpu_mem_usage=True,
-                    **model_kwargs
-                )
                 if distributed:
-                    logger.info("✅ Multi-GPU fallback: Using device_map='auto' for model sharding")
+                    # Multi-GPU fallback: Try DDP first, then model sharding
+                    try:
+                        self.backbone = LlamaForCausalLM.from_pretrained(
+                            model_name,
+                            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                            low_cpu_mem_usage=True,
+                            **model_kwargs
+                        )
+                        logger.info("✅ Multi-GPU fallback: Loaded model for DDP (faster)")
+                    except torch.cuda.OutOfMemoryError:
+                        self.backbone = LlamaForCausalLM.from_pretrained(
+                            model_name,
+                            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                            device_map="auto" if torch.cuda.is_available() else None,
+                            low_cpu_mem_usage=True,
+                            **model_kwargs
+                        )
+                        logger.info("✅ Multi-GPU fallback: Using device_map='auto' for model sharding (slower)")
                 else:
+                    # Single GPU fallback: Always use device_map
+                    self.backbone = LlamaForCausalLM.from_pretrained(
+                        model_name,
+                        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                        device_map="auto" if torch.cuda.is_available() else None,
+                        low_cpu_mem_usage=True,
+                        **model_kwargs
+                    )
                     logger.info("✅ Single GPU fallback: Using device_map='auto'")
         else:
             # Generic causal LM (GPT-2, DialoGPT, etc.)
@@ -1372,6 +1409,11 @@ def main():
         help='Base model to fine-tune'
     )
     parser.add_argument(
+        '--use_smaller_model',
+        action='store_true',
+        help='Use smaller 1B model for faster multi-GPU training'
+    )
+    parser.add_argument(
         '--reward_model_path',
         default='./reward_model_output/reward_model_epoch_10.pt',
         help='Path to trained reward model'
@@ -1449,6 +1491,10 @@ def main():
         if args.gradient_accumulation_steps <= 4:
             logger.info(f"   Setting gradient accumulation steps to 8 for memory efficiency")
             args.gradient_accumulation_steps = 8
+        # For multi-GPU, suggest smaller model for speed unless user explicitly set a model
+        if world_size > 1 and not args.use_smaller_model:
+            logger.info(f"   💡 Tip: Use --use_smaller_model for faster multi-GPU training")
+            logger.info(f"   🐌 Large models (8B+) may be slower with model parallelism")
         if not args.use_lora and not args.no_lora:
             logger.info(f"   Auto-enabling LoRA")
             args.use_lora = True
@@ -1460,6 +1506,11 @@ def main():
             logger.info(f"   Setting learning rate to {learning_rate}")
     elif learning_rate is None:
         learning_rate = 1e-5  # Default for smaller models
+    
+    # Auto-select smaller model for multi-GPU if requested
+    if args.use_smaller_model:
+        args.model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # Much faster for multi-GPU
+        logger.info(f"🚀 Using smaller model for faster training: {args.model}")
     
     # Determine world size
     world_size = args.world_size if args.world_size is not None else args.num_gpus
