@@ -1600,7 +1600,7 @@ def main():
         logger.info("🔥 Detected Llama 8B model - auto-adjusting settings for large model")
         if args.gradient_accumulation_steps <= 4:
             logger.info(f"   Setting gradient accumulation steps to 8 for memory efficiency")
-            args.gradient_accumulation_steps = 8
+            args.gradient_accumulation_steps = 4
         # For multi-GPU, suggest smaller model for speed unless user explicitly set a model
         if world_size > 1 and not args.use_smaller_model:
             logger.info(f"   💡 Tip: Use --use_smaller_model for faster multi-GPU training")
