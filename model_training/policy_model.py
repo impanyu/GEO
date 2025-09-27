@@ -585,8 +585,22 @@ class GRPOModel(nn.Module):
         
         # Enable gradient checkpointing for memory efficiency
         if torch.cuda.is_available():
-            self.backbone.gradient_checkpointing_enable()
-            logger.info("✅ Gradient checkpointing enabled for memory efficiency")
+            # Enable gradient checkpointing with recommended settings
+            if hasattr(self.backbone, 'gradient_checkpointing_enable'):
+                # Use non-reentrant checkpointing for better memory efficiency (PyTorch 2.0+)
+                try:
+                    self.backbone.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+                except TypeError:
+                    # Fallback for older transformers versions
+                    self.backbone.gradient_checkpointing_enable()
+                
+                # Disable use_cache for compatibility with gradient checkpointing
+                if hasattr(self.backbone.config, 'use_cache'):
+                    self.backbone.config.use_cache = False
+                    
+                logger.info("✅ Gradient checkpointing enabled for memory efficiency")
+            else:
+                logger.warning("⚠️ Gradient checkpointing not available for this model")
         
         # Optional: Use LoRA or QLoRA for large models to reduce memory
         if use_lora or use_qlora:
