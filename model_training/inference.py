@@ -248,8 +248,10 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
         
         # Generate
         with torch.no_grad():
-            input_ids = encoding['input_ids'].to(self.device)
-            attention_mask = encoding['attention_mask'].to(self.device)
+            # For models with device_map='auto', don't move inputs to specific device
+            # The model will handle device placement automatically
+            input_ids = encoding['input_ids']
+            attention_mask = encoding['attention_mask']
             
             outputs = self.policy_model.generate(
                 input_ids=input_ids,
