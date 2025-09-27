@@ -994,11 +994,12 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
         if not all_log_probs or not all_advantages:
             return torch.tensor(0.0, device=self.device, requires_grad=True)
         
-        # Convert advantages to tensor (detached as they're constants)
-        advantages_tensor = torch.tensor(all_advantages, device=self.device, requires_grad=False)
-        
-        # Stack all log probs (these have gradients)
+        # Stack all log probs (these have gradients) and get their device
         log_probs_tensor = torch.stack(all_log_probs)
+        target_device = log_probs_tensor.device
+        
+        # Convert advantages to tensor on the same device as log_probs
+        advantages_tensor = torch.tensor(all_advantages, device=target_device, requires_grad=False)
         
         # GRPO gradient: ∇θ J = ∇θ Σ log π(a_i|s_i) * A_i
         # where A_i = R_i - b_i (advantage for sample i)
@@ -1031,7 +1032,9 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
             num_batches += 1
             
             # Update global baseline (exponential moving average) for tracking only
-            rewards_tensor = torch.tensor(all_rewards, dtype=torch.float32, device=self.device)
+            # Use the same device as the first log_prob tensor if available
+            baseline_device = all_log_probs[0].device if all_log_probs else self.device
+            rewards_tensor = torch.tensor(all_rewards, dtype=torch.float32, device=baseline_device)
             self.update_baseline(rewards_tensor)
             
             # Compute GRPO loss using all samples and their advantages
