@@ -1155,9 +1155,15 @@ Extract the modified sentences from the generated text and return them as a JSON
 3. Maintain the same meaning but with better quality/clarity
 4. Be returned as a JSON array of strings
 
+EXAMPLE:
+
+
 If you cannot find valid modified sentences, return the original sentences as a JSON list.
 
 Return ONLY a valid JSON array of strings, nothing else. Do not wrap in markdown code blocks or add any other formatting.
+
+Expected Output format: ["Our product delivers exceptional quality and reliability", "It performs flawlessly with outstanding results"]
+
 """
 
             # Prepare request
