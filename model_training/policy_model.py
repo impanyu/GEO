@@ -218,7 +218,7 @@ class SentenceModificationDataset(Dataset):
         
         # Create input prompt for sentence modification
         sentences_json = json.dumps(item['sentences'])
-        prompt = f"For Dimension: {item['dimension']}\nDomain: {item['domain']}\nModify the following sentences to improve brand visibility:\nSentences: {sentences_json}\n Output the modified sentences as json list after semicolon:"
+        prompt = f"For Dimension: {item['dimension']}\nDomain: {item['domain']}\nModify the following sentences to improve brand visibility:\nSentences: {sentences_json}\n Output the modified sentences in the same order as original sentences, output a json list after semicolon:"
         
         # Tokenize with consistent padding
         encoding = self.tokenizer(
