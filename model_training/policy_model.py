@@ -871,6 +871,18 @@ class GRPOTrainer:
                 # Step 3: Decode and extract sentences for reward calculation
                 generated_text = self.tokenizer.decode(generated_sequence, skip_special_tokens=True)
                 
+                # Decode input prompt for logging
+                input_prompt = self.tokenizer.decode(input_ids[0], skip_special_tokens=True)
+                
+                # Log input and generated sample (only for main process to avoid duplicate logs)
+                if self.is_main_process and (i == 0 or sample_idx == 0):  # Log first sample of first input or first sample of each input
+                    logger.info(f"📝 Training Sample - Input {i+1}, Sample {sample_idx+1}")
+                    logger.info(f"   Input Prompt: {input_prompt}")
+                    logger.info(f"   Generated Text: {generated_text}")
+                    logger.info(f"   Original Sentences: {batch['original_sentences'][i]}")
+                    logger.info(f"   Brand: {batch['brand_name'][i]}, Dimension: {batch['dimension'][i]}, Domain: {batch['domain'][i]}")
+                    logger.info("   " + "-" * 80)
+                
                 try:
                     # Look for JSON list after semicolon (new format)
                     if ":" in generated_text:
@@ -907,6 +919,10 @@ class GRPOTrainer:
                 except Exception:
                     sentences = batch['original_sentences'][i]
                 
+                # Log extracted sentences
+                if self.is_main_process and (i == 0 or sample_idx == 0):
+                    logger.info(f"   Extracted Sentences: {sentences}")
+                
                 # Step 4: Calculate reward using calculate_rewards_tmp
                 sample_batch = {
                     'brand_name': [batch['brand_name'][i]],
@@ -915,6 +931,10 @@ class GRPOTrainer:
                 }
                 rewards = await self.calculate_rewards_tmp(sample_batch, [sentences])
                 reward = rewards[0]
+                
+                # Log reward score
+                if self.is_main_process and (i == 0 or sample_idx == 0):
+                    logger.info(f"   Reward Score: {reward:.4f}")
                 
                 # Store for this input's baseline calculation
                 input_sample_rewards.append(reward)
@@ -930,12 +950,21 @@ class GRPOTrainer:
             # Calculate baseline for this input (mean of all its samples)
             input_baseline = sum(input_sample_rewards) / len(input_sample_rewards)
             
+            # Log baseline and advantages for this input
+            if self.is_main_process:
+                logger.info(f"   Input {i+1} Baseline: {input_baseline:.4f}")
+                logger.info(f"   Input {i+1} Sample Rewards: {[f'{r:.3f}' for r in input_sample_rewards]}")
+            
             # Calculate advantages for all samples of this input and add to global lists
             for j in range(len(input_sample_rewards)):
                 advantage = input_sample_rewards[j] - input_baseline
                 all_log_probs.append(input_sample_log_probs[j])
                 all_rewards.append(input_sample_rewards[j])
                 all_advantages.append(advantage)
+                
+                # Log advantage for first sample of each input
+                if self.is_main_process and j == 0:
+                    logger.info(f"   Input {i+1} Sample {j+1} Advantage: {advantage:.4f}")
         
         # Restore original training mode
         if was_training:
