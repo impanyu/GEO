@@ -248,20 +248,19 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
         
         # Generate
         with torch.no_grad():
-            # Check if model uses device_map (distributed across multiple GPUs)
-            model_uses_device_map = hasattr(self.policy_model, 'hf_device_map')
+            # Get the actual model (unwrap any wrappers)
+            actual_model = self.policy_model
             
-            if model_uses_device_map:
-                # For models with device_map='auto', move inputs to the first available device
-                first_device = next(iter(self.policy_model.hf_device_map.values()))
-                input_ids = encoding['input_ids'].to(first_device)
-                attention_mask = encoding['attention_mask'].to(first_device)
-            else:
-                # For single-device models, use self.device
-                input_ids = encoding['input_ids'].to(self.device)
-                attention_mask = encoding['attention_mask'].to(self.device)
+            # For models with device_map, use the backbone model directly
+            if hasattr(actual_model, 'backbone'):
+                actual_model = actual_model.backbone
             
-            outputs = self.policy_model.generate(
+            # Move inputs to the model's device
+            model_device = next(actual_model.parameters()).device
+            input_ids = encoding['input_ids'].to(model_device)
+            attention_mask = encoding['attention_mask'].to(model_device)
+            
+            outputs = actual_model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 max_new_tokens=max_new_tokens,
