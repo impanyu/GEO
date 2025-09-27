@@ -87,7 +87,11 @@ async def get_mongodb_connection():
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from transformers import (
     AutoTokenizer, 
     AutoModel,
@@ -108,6 +112,29 @@ from reward_model import RewardModel, TrainingConfig as RewardConfig
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def setup_distributed(rank: int, world_size: int, master_addr: str = "localhost", master_port: str = "12355"):
+    """Initialize distributed training environment"""
+    os.environ['MASTER_ADDR'] = master_addr
+    os.environ['MASTER_PORT'] = master_port
+    
+    # Initialize the process group
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    
+    # Set the current CUDA device
+    torch.cuda.set_device(rank)
+    
+    logger.info(f"🚀 Distributed training initialized: rank {rank}/{world_size}")
+
+def cleanup_distributed():
+    """Clean up distributed training environment"""
+    dist.destroy_process_group()
+
+def is_main_process(rank: int = None) -> bool:
+    """Check if this is the main process (rank 0)"""
+    if rank is not None:
+        return rank == 0
+    return not dist.is_initialized() or dist.get_rank() == 0
 
 # Content dimensions from analyze-web-content.ts
 CONTENT_DIMENSIONS_DESCRIPTIONS = {
@@ -150,6 +177,13 @@ class GRPOConfig:
     gradient_accumulation_steps: int = 1  # Added for large models
     baseline_tau: float = 0.95  # Exponential moving average for baseline
     num_samples_per_input: int = 5  # Number of sequences to sample per input
+    # Multi-GPU configuration
+    distributed: bool = False  # Enable distributed training
+    world_size: int = 1  # Total number of processes (GPUs)
+    rank: int = 0  # Current process rank
+    local_rank: int = 0  # Local GPU rank
+    master_addr: str = "localhost"  # Master node address
+    master_port: str = "12355"  # Master node port
 
 class SentenceModificationDataset(Dataset):
     """Dataset for sentence modification task"""
@@ -478,8 +512,20 @@ class GRPOTrainer:
     
     def __init__(self, config: GRPOConfig):
         self.config = config
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        logger.info(f"Using device: {self.device}")
+        
+        # Setup distributed training if enabled
+        if config.distributed:
+            setup_distributed(config.rank, config.world_size, config.master_addr, config.master_port)
+            self.device = torch.device(f'cuda:{config.local_rank}')
+            self.is_main_process = config.rank == 0
+        else:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            self.is_main_process = True
+        
+        if self.is_main_process:
+            logger.info(f"Using device: {self.device}")
+            if config.distributed:
+                logger.info(f"🎯 Distributed training: {config.world_size} GPUs")
         
         # Set seed
         set_seed(config.seed)
@@ -513,11 +559,21 @@ class GRPOTrainer:
         # Initialize GRPO model (no value head)
         self.model = GRPOModel(config.model_name, use_lora=use_lora)
         
-        # Move to device (handle large models)
-        if not torch.cuda.is_available() or not use_lora:
+        # Move to device and setup distributed training
+        if config.distributed:
+            # For distributed training, move model to specific GPU
             self.model.to(self.device)
+            # Wrap with DistributedDataParallel
+            self.model = DDP(self.model, device_ids=[config.local_rank], output_device=config.local_rank)
+            if self.is_main_process:
+                logger.info(f"🔄 Model wrapped with DistributedDataParallel on GPU {config.local_rank}")
         else:
-            logger.info("🎮 Model using device_map for large model optimization")
+            # Single GPU or CPU training
+            if not torch.cuda.is_available() or not use_lora:
+                self.model.to(self.device)
+            else:
+                if self.is_main_process:
+                    logger.info("🎮 Model using device_map for large model optimization")
         
         # Initialize reward calculator
         self.reward_calculator = RewardCalculator(config.reward_model_path)
@@ -550,8 +606,11 @@ class GRPOTrainer:
         # Store current training mode
         was_training = self.model.training
         
-        # Determine target device
-        target_device = next(self.model.parameters()).device
+        # Determine target device - handle DDP wrapper
+        if isinstance(self.model, DDP):
+            target_device = next(self.model.module.parameters()).device
+        else:
+            target_device = next(self.model.parameters()).device
         
         # Store ALL samples across all inputs for proper GRPO loss calculation
         all_log_probs = []  # List of log prob tensors for ALL samples
@@ -1023,38 +1082,67 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
 
     async def train(self, train_data: List[Dict]):
         """Main GRPO training loop"""
-        logger.info("Starting GRPO (Generative Reinforcement Policy Optimization) training")
-        logger.info(f"🔬 Proper GRPO: {self.config.num_samples_per_input} samples per input, all samples used for loss")
-        logger.info(f"🎯 Using differentiable forward pass for log probabilities")
-        logger.info(f"📊 Loss: -Σ(log_prob_i * advantage_i) for all samples")
+        if self.is_main_process:
+            logger.info("Starting GRPO (Generative Reinforcement Policy Optimization) training")
+            logger.info(f"🔬 Proper GRPO: {self.config.num_samples_per_input} samples per input, all samples used for loss")
+            logger.info(f"🎯 Using differentiable forward pass for log probabilities")
+            logger.info(f"📊 Loss: -Σ(log_prob_i * advantage_i) for all samples")
         
         # Create dataset and dataloader with custom collate function
         dataset = SentenceModificationDataset(train_data, self.tokenizer, self.config.max_length)
-        data_loader = DataLoader(
-            dataset, 
-            batch_size=self.config.batch_size, 
-            shuffle=True,
-            collate_fn=self.collate_fn
-        )
+        
+        # Use DistributedSampler for multi-GPU training
+        if self.config.distributed:
+            sampler = DistributedSampler(
+                dataset, 
+                num_replicas=self.config.world_size, 
+                rank=self.config.rank,
+                shuffle=True
+            )
+            data_loader = DataLoader(
+                dataset, 
+                batch_size=self.config.batch_size, 
+                sampler=sampler,
+                collate_fn=self.collate_fn
+            )
+        else:
+            data_loader = DataLoader(
+                dataset, 
+                batch_size=self.config.batch_size, 
+                shuffle=True,
+                collate_fn=self.collate_fn
+            )
         
         # Setup optimizer
         optimizer = optim.AdamW(self.model.parameters(), lr=self.config.learning_rate)
         
         # Training loop
         for epoch in range(1, self.config.num_epochs + 1):
-            logger.info(f"GRPO Epoch {epoch}/{self.config.num_epochs}")
+            if self.is_main_process:
+                logger.info(f"GRPO Epoch {epoch}/{self.config.num_epochs}")
+            
+            # Set epoch for DistributedSampler
+            if self.config.distributed:
+                sampler.set_epoch(epoch)
             
             avg_reward = await self.train_epoch(data_loader, optimizer)
-            logger.info(f"Average Reward: {avg_reward:.4f}, Global Baseline: {self.running_baseline:.4f}")
             
-            # Save checkpoint
-            if epoch % self.config.save_every == 0:
-                self.save_model(epoch)
+            if self.is_main_process:
+                logger.info(f"Average Reward: {avg_reward:.4f}, Global Baseline: {self.running_baseline:.4f}")
+                
+                # Save checkpoint
+                if epoch % self.config.save_every == 0:
+                    self.save_model(epoch)
         
-        # Plot results and save final model
-        self.plot_training_history()
-        self.save_model(self.config.num_epochs)
-        logger.info("GRPO training completed!")
+        if self.is_main_process:
+            # Plot results and save final model
+            self.plot_training_history()
+            self.save_model(self.config.num_epochs)
+            logger.info("GRPO training completed!")
+        
+        # Clean up distributed training
+        if self.config.distributed:
+            cleanup_distributed()
 
 async def load_training_data(brand_urls: List[str]) -> List[Dict]:
     """Load training data from MongoDB FullWebContentCache"""
@@ -1118,6 +1206,33 @@ async def load_training_data(brand_urls: List[str]) -> List[Dict]:
         raise ValueError("No training data found! Make sure to run analyze-web-content.ts first.")
     
     return training_data
+
+def train_worker(rank: int, world_size: int, args, train_data: List[Dict]):
+    """Worker function for distributed training"""
+    # Create config with distributed settings
+    config = GRPOConfig(
+        model_name=args.model,
+        reward_model_path=args.reward_model_path,
+        num_epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate if args.learning_rate else (1e-6 if "llama" in args.model.lower() and "8b" in args.model.lower() else 1e-5),
+        output_dir=args.output_dir,
+        use_lora=args.use_lora,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        max_length=args.max_length,
+        num_samples_per_input=args.num_samples_per_input,
+        # Distributed settings
+        distributed=True,
+        world_size=world_size,
+        rank=rank,
+        local_rank=rank,  # Assuming single node
+        master_addr="localhost",
+        master_port="12355"
+    )
+    
+    # Initialize trainer and start training
+    trainer = GRPOTrainer(config)
+    asyncio.run(trainer.train(train_data))
 
 def main():
     """Main function"""
@@ -1188,6 +1303,18 @@ def main():
         default=5,
         help='Number of sequences to sample per input for baseline estimation'
     )
+    parser.add_argument(
+        '--num_gpus',
+        type=int,
+        default=1,
+        help='Number of GPUs to use for distributed training (default: 1 for single GPU)'
+    )
+    parser.add_argument(
+        '--world_size',
+        type=int,
+        default=None,
+        help='Total number of processes for distributed training (auto-detected from num_gpus if not specified)'
+    )
     
     args = parser.parse_args()
     
@@ -1210,36 +1337,65 @@ def main():
     elif learning_rate is None:
         learning_rate = 1e-5  # Default for smaller models
     
-    # Create config
-    config = GRPOConfig(
-        model_name=args.model,
-        reward_model_path=args.reward_model_path,
-        num_epochs=args.epochs,
-        batch_size=args.batch_size,
-        learning_rate=learning_rate,
-        output_dir=args.output_dir,
-        use_lora=args.use_lora,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        max_length=args.max_length,
-        num_samples_per_input=args.num_samples_per_input
-    )
+    # Determine world size
+    world_size = args.world_size if args.world_size is not None else args.num_gpus
     
-    # Load training data from MongoDB
+    # Load training data from MongoDB (only once, before spawning processes)
     try:
         train_data = asyncio.run(load_training_data(args.brand_urls))
     except Exception as e:
         logger.error(f"Failed to load training data: {e}")
         sys.exit(1)
     
-    # Initialize GRPO trainer
-    trainer = GRPOTrainer(config)
-    
-    # Start training
-    try:
-        asyncio.run(trainer.train(train_data))
-    except Exception as e:
-        logger.error(f"Training failed: {e}")
-        sys.exit(1)
+    # Check if using multi-GPU training
+    if world_size > 1:
+        logger.info(f"🚀 Starting distributed training with {world_size} GPUs")
+        
+        # Verify GPU availability
+        if not torch.cuda.is_available():
+            logger.error("CUDA is not available for multi-GPU training")
+            sys.exit(1)
+        
+        available_gpus = torch.cuda.device_count()
+        if world_size > available_gpus:
+            logger.error(f"Requested {world_size} GPUs but only {available_gpus} are available")
+            sys.exit(1)
+        
+        # Use torch.multiprocessing.spawn for distributed training
+        mp.spawn(
+            train_worker,
+            args=(world_size, args, train_data),
+            nprocs=world_size,
+            join=True
+        )
+        
+    else:
+        # Single GPU/CPU training
+        logger.info("🎯 Starting single GPU training")
+        
+        config = GRPOConfig(
+            model_name=args.model,
+            reward_model_path=args.reward_model_path,
+            num_epochs=args.epochs,
+            batch_size=args.batch_size,
+            learning_rate=learning_rate,
+            output_dir=args.output_dir,
+            use_lora=args.use_lora,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            max_length=args.max_length,
+            num_samples_per_input=args.num_samples_per_input,
+            distributed=False
+        )
+        
+        # Initialize GRPO trainer
+        trainer = GRPOTrainer(config)
+        
+        # Start training
+        try:
+            asyncio.run(trainer.train(train_data))
+        except Exception as e:
+            logger.error(f"Training failed: {e}")
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
