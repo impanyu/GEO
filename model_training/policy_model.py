@@ -470,19 +470,17 @@ class GRPOModel(nn.Module):
             # Choose loading strategy based on distributed training requirements
             try:
                 if distributed:
-                    # For multi-GPU: Use device_map="auto" with DataParallel (not DDP)
-                    # This allows model sharding across all available GPUs
+                    # For multi-GPU: Load on GPU 0, let DataParallel handle distribution
                     self.backbone = LlamaForCausalLM.from_pretrained(
                         model_name,
                         dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                        device_map="auto",  # Shard model across all available devices
                         attn_implementation="flash_attention_2",
                         low_cpu_mem_usage=True,
                         **model_kwargs
                     )
-                    logger.info("✅ Multi-GPU: Using device_map='auto' with model sharding")
+                    logger.info("✅ Multi-GPU: Loaded on single device for DataParallel")
                 else:
-                    # For single GPU: Standard approach
+                    # For single GPU: Use device_map for memory efficiency
                     self.backbone = LlamaForCausalLM.from_pretrained(
                         model_name,
                         dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
@@ -497,17 +495,16 @@ class GRPOModel(nn.Module):
                 logger.warning(f"⚠️ Flash Attention 2 not available: {e}")
                 logger.info("🔄 Falling back to standard attention")
                 if distributed:
-                    # Multi-GPU fallback with model sharding
+                    # Multi-GPU fallback: Load on single device for DataParallel
                     self.backbone = LlamaForCausalLM.from_pretrained(
                         model_name,
                         dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                        device_map="auto",  # Shard model across all available devices
                         low_cpu_mem_usage=True,
                         **model_kwargs
                     )
-                    logger.info("✅ Multi-GPU fallback: Using device_map='auto' with model sharding")
+                    logger.info("✅ Multi-GPU fallback: Loaded on single device for DataParallel")
                 else:
-                    # Single GPU fallback
+                    # Single GPU fallback: Use device_map for memory efficiency
                     self.backbone = LlamaForCausalLM.from_pretrained(
                         model_name,
                         dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
@@ -625,14 +622,23 @@ class GRPOTrainer:
         
         # Setup multi-GPU training
         if config.distributed:
-            # For multi-GPU with device_map="auto", we use DataParallel
-            # (model is already sharded across devices by device_map)
-            available_gpus = list(range(torch.cuda.device_count()))
-            self.model = torch.nn.DataParallel(self.model, device_ids=available_gpus)
-            if self.is_main_process:
-                logger.info(f"🔄 Model wrapped with DataParallel across {len(available_gpus)} GPUs")
-                logger.info(f"🎯 Using model sharding + DataParallel for memory efficiency")
-        else:
+            try:
+                # Try to move model to GPU 0 first, then wrap with DataParallel
+                self.model.to(torch.device('cuda:0'))
+                available_gpus = list(range(torch.cuda.device_count()))
+                self.model = torch.nn.DataParallel(self.model, device_ids=available_gpus)
+                if self.is_main_process:
+                    logger.info(f"✅ Model moved to cuda:0 and wrapped with DataParallel across {len(available_gpus)} GPUs")
+                    logger.info(f"🎯 Using DataParallel for multi-GPU training")
+            except torch.cuda.OutOfMemoryError as e:
+                if self.is_main_process:
+                    logger.error(f"❌ Model too large for single GPU: {e}")
+                    logger.info("🔄 Falling back to single GPU training with device_map")
+                # Fall back to single GPU training
+                config.distributed = False
+                self.is_main_process = True
+        
+        if not config.distributed:
             # Single GPU or CPU training
             if not torch.cuda.is_available() or not use_lora:
                 self.model.to(self.device)
