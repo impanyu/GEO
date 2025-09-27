@@ -171,6 +171,21 @@ CONTENT_DIMENSIONS_DESCRIPTIONS = {
     "Analytics / Insights": "Analytics capabilities and data insights"
 }
 
+
+LARGE_SITE_LIST = [
+  'wikipedia.org',
+  'youtube.com',
+  'reddit.com',
+  'quora.com',
+  'instagram.com',
+  'tiktok.com',
+  'x.com',
+  'linkedin.com',
+  'forbes.com',
+  'medium.com',
+  'g2.com'
+]
+
 @dataclass
 class GRPOConfig:
     """GRPO training configuration"""
@@ -218,7 +233,15 @@ class SentenceModificationDataset(Dataset):
         
         # Create input prompt for sentence modification
         sentences_json = json.dumps(item['sentences'])
-        prompt = f"The following sentences is published on {item['domain']} and is about {item['dimension']} for brand {item['brand_name']}. You need to modify the sentences to improve brand visibility:\nSentences: {sentences_json}\n Output the modified sentences in the same order as original sentences, output a json list of strings after semicolon:"
+        prompt = f"""The following sentences is published on {item['domain']} and is about {item['dimension']} for brand {item['brand_name']}. You need to give modification suggestions for the list of sentences to improve brand visibility:
+Sentences: {sentences_json}
+
+Your suggestion include keywords to add/remove, style to adopt, sentence structure to adopt, content/topics to add/remove, etc.
+When your suggestion is only applied to one sentence, you need to specify which sentence to modify, or your suggestion is considered general for all sentences.
+When suggesting new content, you do not need to write specific content, you can point out which aspect/topics of the content to improve.
+When sentence list is empty, you can suggest new content/aspects/topics to add.
+All the suggested new content/topics/aspects should still be related to the brand {item['brand_name']} and {item['dimension']}.
+Output the modification suggestions as a paragraph after semicolon:"""
         
         # Tokenize with consistent padding
         encoding = self.tokenizer(
@@ -883,8 +906,8 @@ class GRPOTrainer:
                     logger.info(f"   Brand: {batch['brand_name'][i]}, Dimension: {batch['dimension'][i]}, Domain: {batch['domain'][i]}")
                     logger.info("   " + "-" * 80)
                 
-                # Extract modified sentences using GPT-4o via OpenRouter API
-                sentences = await self._extract_modified_sentences_with_gpt4o(
+                # Extract modification suggestions and apply them to get modified sentences using GPT-4o
+                sentences = await self._extract_and_apply_suggestions_with_gpt4o(
                     generated_text, 
                     batch['original_sentences'][i],
                     batch['brand_name'][i],
@@ -998,12 +1021,13 @@ class GRPOTrainer:
                 
                 # Create evaluation prompt
                 prompt = f"""
-You are an AI content quality evaluator. Your task is to assess the quality and usefulness of content sentences.
+You are an AI content visibility evaluator. Your task is to assess the probability of content sentences being quoted or referenced by AI agents like ChatGPT when answering user questions about this brand or topic.
 
 CONTEXT:
 - Brand: {brand_name}
 - Content Dimension: {dimension}
 - Source Domain: {domain}
+- Large Site List: {LARGE_SITE_LIST}
 
 CONTENT TO EVALUATE:
 {sentences_text}
@@ -1011,20 +1035,23 @@ CONTENT TO EVALUATE:
 EVALUATION TASK:
 Rate the probability (0.0 to 1.0) that these sentences would be quoted or referenced by AI agents like ChatGPT when answering user questions about this brand or topic.
 
-QUALITY CRITERIA:
-1. Factual accuracy and informativeness
-2. Relevance to the brand and dimension
-3. Clarity and readability
-4. Usefulness for answering questions
-5. Credibility and trustworthiness
-6. Specificity vs vague generalities
+SCORING CRITERIA:
+1. The quality and usefulness of the sentences
+2. The relevance to the brand and dimension
+3. The clarity and readability of the sentences
+4. The credibility and trustworthiness of the sentences
+5. The specificity vs vague generalities of the sentences
+6. The domain on which the sentences are posted is also important, if the domain is in the Large Site List, the probability of being quoted is higher.
+7. The content dimension also affects the probability of being quoted, if the content dimension tend to be asked more often, the probability of being quoted is higher.
+
+PAY ATTENTION: Be conservative in your scoring, unless you are very sure, do not give high score, normally the score should be between 0 - 0.6, with mean around 0.2.
 
 SCORING GUIDE:
-- 0.9-1.0: Exceptional quality - highly likely to be quoted
-- 0.7-0.8: Good quality - probably quoted for relevant queries  
-- 0.5-0.6: Average quality - might be quoted occasionally
-- 0.3-0.4: Below average - unlikely to be quoted
-- 0.0-0.2: Poor quality - very unlikely to be quoted
+- 0.9-1.0: highly likely to be quoted
+- 0.7-0.8: probably quoted for relevant queries  
+- 0.5-0.6: might be quoted occasionally
+- 0.3-0.4: unlikely to be quoted
+- 0.0-0.2: very unlikely to be quoted
 
 Return ONLY a single floating point number between 0.0 and 1.0 representing the probability score.
 """
@@ -1109,7 +1136,7 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
             logger.error(f"Error calling OpenRouter API: {e}")
             return 0.0
     
-    async def _extract_modified_sentences_with_gpt4o(
+    async def _extract_and_apply_suggestions_with_gpt4o(
         self, 
         generated_text: str, 
         original_sentences: List[str], 
@@ -1118,17 +1145,17 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
         domain: str
     ) -> List[str]:
         """
-        Extract modified sentences from generated text using GPT-4o via OpenRouter API
+        Extract modification suggestions from generated text and apply them to create modified sentences using GPT-4o
         
         Args:
-            generated_text: The full text generated by the model
+            generated_text: The full text generated by the model (contains suggestions after semicolon)
             original_sentences: The original input sentences
             brand_name: Brand name for context
             dimension: Content dimension for context
             domain: Domain for context
             
         Returns:
-            List of modified sentences
+            List of modified sentences based on the suggestions
         """
         try:
             # Check for API key
@@ -1137,32 +1164,44 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
                 logger.error("OPENROUTER_API_KEY not found in environment")
                 return original_sentences  # Fallback to original sentences
             
-            # Create extraction prompt
+            # Extract suggestions after semicolon
+            suggestions = ""
+            if ":" in generated_text:
+                suggestions = generated_text.split(":")[-1].strip()
+            else:
+                suggestions = generated_text.strip()
+            
+            # Create application prompt
             original_json = json.dumps(original_sentences)
-            extraction_prompt = f"""
-You are a sentence extraction assistant. Your task is to extract the modified sentences from the generated text.
+            application_prompt = f"""
+You are a sentence modification assistant. Your task is to apply the given modification suggestions to improve the original sentences.
 
 CONTEXT:
+- Brand: {brand_name}
+- Dimension: {dimension}
+- Domain: {domain}
 - Original sentences: {original_json}
 
-GENERATED TEXT:
-{generated_text}
+MODIFICATION SUGGESTIONS:
+{suggestions}
 
 TASK:
-Extract the modified sentences from the generated text and return them as a JSON list of strings. The modified sentences should:
-1. Be in the same order as the original sentences
-2. Be a modified version of the original sentences
-3. Maintain the same meaning but with better quality/clarity
-4. Be returned as a JSON array of strings
+Apply the modification suggestions to improve the original sentences for better brand visibility. Create modified sentences that:
+1. Follow the suggestions provided
+2. Maintain the same meaning as the original sentences
+3. Are in the same order as the original sentences
+4. Newly added sentences should be added to the end of the modified original sentences
+5. Are returned as a JSON array of strings
 
-EXAMPLE:
-
-
-If you cannot find valid modified sentences, return the original sentences as a JSON list.
+GUIDELINES:
+- If suggestions mention specific sentences, apply changes only to those sentences
+- If suggestions are general, apply them to all sentences appropriately
+- Focus on improving keywords, style, structure, and content as suggested
+- Keep the core meaning intact while enhancing brand visibility
 
 Return ONLY a valid JSON array of strings, nothing else. Do not wrap in markdown code blocks or add any other formatting.
 
-Expected Output format: ["Our product delivers exceptional quality and reliability", "It performs flawlessly with outstanding results"]
+Expected Output format: ["Enhanced sentence 1 with better keywords", "Improved sentence 2 with better structure","newly added sentence",...]
 
 """
 
@@ -1171,7 +1210,7 @@ Expected Output format: ["Our product delivers exceptional quality and reliabili
                 'Authorization': f'Bearer {openrouter_api_key}',
                 'Content-Type': 'application/json',
                 'HTTP-Referer': 'https://github.com/your-repo',
-                'X-Title': 'GEO Sentence Extraction'
+                'X-Title': 'GEO Sentence Modification'
             }
             
             data = {
@@ -1179,11 +1218,11 @@ Expected Output format: ["Our product delivers exceptional quality and reliabili
                 'messages': [
                     {
                         'role': 'user',
-                        'content': extraction_prompt
+                        'content': application_prompt
                     }
                 ],
                 'temperature': 0.1,
-                'max_tokens': 500  # Enough for sentence extraction
+                'max_tokens': 800  # Enough for sentence modification
             }
             
             # Make API call
@@ -1195,7 +1234,7 @@ Expected Output format: ["Our product delivers exceptional quality and reliabili
             )
             
             if response.status_code != 200:
-                logger.error(f"OpenRouter API error during extraction: {response.status_code} - {response.text}")
+                logger.error(f"OpenRouter API error during suggestion application: {response.status_code} - {response.text}")
                 return original_sentences  # Fallback to original sentences
             
             result = response.json()
@@ -1220,21 +1259,21 @@ Expected Output format: ["Our product delivers exceptional quality and reliabili
             
             # Parse the JSON response
             try:
-                extracted_sentences = json.loads(content)
-                if isinstance(extracted_sentences, list):
+                modified_sentences = json.loads(content)
+                if isinstance(modified_sentences, list):
                     # Ensure all items are strings
-                    sentences = [str(sentence) for sentence in extracted_sentences]
-                    logger.debug(f"Successfully extracted {len(sentences)} sentences using GPT-4o")
+                    sentences = [str(sentence) for sentence in modified_sentences]
+                    logger.debug(f"Successfully applied suggestions to create {len(sentences)} modified sentences using GPT-4o")
                     return sentences
                 else:
-                    logger.warning(f"GPT-4o returned non-list: {extracted_sentences}")
+                    logger.warning(f"GPT-4o returned non-list: {modified_sentences}")
                     return original_sentences
             except json.JSONDecodeError as e:
-                logger.error(f"Could not parse JSON from GPT-4o extraction: '{content}' - {e}")
+                logger.error(f"Could not parse JSON from GPT-4o suggestion application: '{content}' - {e}")
                 return original_sentences
                 
         except Exception as e:
-            logger.error(f"Error extracting sentences with GPT-4o: {e}")
+            logger.error(f"Error applying suggestions with GPT-4o: {e}")
             return original_sentences  # Fallback to original sentences
     
     def update_baseline(self, rewards: torch.Tensor):

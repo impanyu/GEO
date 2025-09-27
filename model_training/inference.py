@@ -14,6 +14,44 @@ import torch
 from transformers import AutoTokenizer
 from reward_model import RewardModel
 from policy_model import GRPOModel, GRPOConfig
+import pymongo
+import asyncio
+from typing import Dict, List
+from dotenv import load_dotenv
+import datetime
+
+# Load environment variables
+load_dotenv('../.env.local')
+
+def normalize_url(url: str) -> str:
+    """Normalize URL for consistent comparison - matches PromptCache.ts logic"""
+    # Remove protocol if present
+    normalized = url
+    if normalized.startswith('https://'):
+        normalized = normalized[8:]  # Remove 'https://'
+    elif normalized.startswith('http://'):
+        normalized = normalized[7:]   # Remove 'http://'
+    
+    # Remove www. if present
+    if normalized.startswith('www.'):
+        normalized = normalized[4:]   # Remove 'www.'
+    
+    # Remove trailing slash
+    if normalized.endswith('/'):
+        normalized = normalized[:-1]  # Remove trailing '/'
+    
+    # Convert to lowercase for consistent comparison
+    return normalized.lower()
+
+async def get_mongodb_connection():
+    """Get MongoDB connection"""
+    mongodb_uri = os.getenv('MONGODB_URI')
+    if not mongodb_uri:
+        raise ValueError("MONGODB_URI environment variable not set")
+    
+    client = pymongo.MongoClient(mongodb_uri)
+    db = client['springbrand-ai']
+    return db
 
 class ModelInference:
     """Inference wrapper for trained models"""
@@ -120,14 +158,30 @@ class ModelInference:
             # Format sentences for evaluation
             sentences_text = '\n'.join([f"- {sentence}" for sentence in sentences])
             
+            # Large site list (same as policy model)
+            LARGE_SITE_LIST = [
+                'wikipedia.org',
+                'youtube.com',
+                'reddit.com',
+                'quora.com',
+                'instagram.com',
+                'tiktok.com',
+                'x.com',
+                'linkedin.com',
+                'forbes.com',
+                'medium.com',
+                'g2.com'
+            ]
+            
             # Create evaluation prompt (same as policy model)
             prompt = f"""
-You are an AI content quality evaluator. Your task is to assess the quality and usefulness of content sentences.
+You are an AI content visibility evaluator. Your task is to assess the probability of content sentences being quoted or referenced by AI agents like ChatGPT when answering user questions about this brand or topic.
 
 CONTEXT:
 - Brand: {brand_name}
 - Content Dimension: {dimension}
 - Source Domain: {domain}
+- Large Site List: {LARGE_SITE_LIST}
 
 CONTENT TO EVALUATE:
 {sentences_text}
@@ -135,20 +189,23 @@ CONTENT TO EVALUATE:
 EVALUATION TASK:
 Rate the probability (0.0 to 1.0) that these sentences would be quoted or referenced by AI agents like ChatGPT when answering user questions about this brand or topic.
 
-QUALITY CRITERIA:
-1. Factual accuracy and informativeness
-2. Relevance to the brand and dimension
-3. Clarity and readability
-4. Usefulness for answering questions
-5. Credibility and trustworthiness
-6. Specificity vs vague generalities
+SCORING CRITERIA:
+1. The quality and usefulness of the sentences
+2. The relevance to the brand and dimension
+3. The clarity and readability of the sentences
+4. The credibility and trustworthiness of the sentences
+5. The specificity vs vague generalities of the sentences
+6. The domain on which the sentences are posted is also important, if the domain is in the Large Site List, the probability of being quoted is higher.
+7. The content dimension also affects the probability of being quoted, if the content dimension tend to be asked more often, the probability of being quoted is higher.
+
+PAY ATTENTION: Be conservative in your scoring, unless you are very sure, do not give high score, normally the score should be between 0 - 0.6, with mean around 0.2.
 
 SCORING GUIDE:
-- 0.9-1.0: Exceptional quality - highly likely to be quoted
-- 0.7-0.8: Good quality - probably quoted for relevant queries  
-- 0.5-0.6: Average quality - might be quoted occasionally
-- 0.3-0.4: Below average - unlikely to be quoted
-- 0.0-0.2: Poor quality - very unlikely to be quoted
+- 0.9-1.0: highly likely to be quoted
+- 0.7-0.8: probably quoted for relevant queries  
+- 0.5-0.6: might be quoted occasionally
+- 0.3-0.4: unlikely to be quoted
+- 0.0-0.2: very unlikely to be quoted
 
 Return ONLY a single floating point number between 0.0 and 1.0 representing the probability score.
 """
@@ -339,6 +396,158 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
         results['final_score'] = await self.predict_visibility_tmp(current_sentences, dimension, domain, brand_name)
         
         return results
+    
+    async def optimize_all_brand(self, brand_url: str, iterations: int = 3) -> Dict:
+        """
+        Optimize all web content for a brand and update MongoDB FullWebContentCache
+        
+        Args:
+            brand_url: Brand URL to optimize
+            iterations: Number of optimization iterations per domain/dimension
+            
+        Returns:
+            Dictionary with optimization results and statistics
+        """
+        if self.policy_model is None:
+            raise ValueError("Policy model must be loaded for optimization")
+        
+        print(f"🚀 Starting brand optimization for: {brand_url}")
+        
+        # Normalize brand URL
+        normalized_brand_url = normalize_url(brand_url)
+        
+        # Connect to MongoDB
+        db = await get_mongodb_connection()
+        collection = db['full_web_content']
+        
+        # Find brand document
+        brand_doc = collection.find_one({'normalizedBrandUrl': normalized_brand_url})
+        if not brand_doc:
+            # Try with original URL as fallback
+            brand_doc = collection.find_one({'brandUrl': brand_url})
+        
+        if not brand_doc:
+            raise ValueError(f"Brand not found in database: {brand_url}")
+        
+        brand_name = brand_doc['brandName']
+        website_content = brand_doc['websiteContent']
+        
+        print(f"📊 Found brand: {brand_name}")
+        print(f"📏 Dimensions: {len(website_content)}")
+        
+        # Track optimization results
+        results = {
+            'brand_name': brand_name,
+            'brand_url': brand_url,
+            'normalized_brand_url': normalized_brand_url,
+            'total_domains': 0,
+            'total_optimized': 0,
+            'total_improved': 0,
+            'dimensions': {}
+        }
+        
+        # Process each dimension
+        for dimension, dimension_content in website_content.items():
+            print(f"\n🎯 Processing dimension: {dimension}")
+            
+            dimension_results = {
+                'domains': 0,
+                'optimized': 0,
+                'improved': 0,
+                'details': []
+            }
+            
+            # Process each domain in this dimension
+            for domain, domain_data in dimension_content.items():
+                results['total_domains'] += 1
+                dimension_results['domains'] += 1
+                
+                # Get original sentences
+                original_sentences = domain_data.get('sentences', [])
+                
+                # Skip if no sentences
+                if not original_sentences or len(original_sentences) == 0:
+                    print(f"  ⏭️ Skipping {domain} (no sentences)")
+                    continue
+                
+                print(f"  🔄 Optimizing {domain} ({len(original_sentences)} sentences)")
+                
+                try:
+                    # Calculate original visibility score
+                    original_score = await self.predict_visibility_tmp(
+                        original_sentences, dimension, domain, brand_name
+                    )
+                    
+                    # Optimize sentences
+                    optimization_results = await self.optimize_sentences(
+                        original_sentences, dimension, domain, iterations, brand_name
+                    )
+                    
+                    modified_sentences = optimization_results['final_sentences']
+                    modified_score = optimization_results['final_score']
+                    
+                    # Update domain data with new scores and modified sentences
+                    domain_data['visibility'] = original_score
+                    domain_data['modifiedSentences'] = modified_sentences
+                    domain_data['modifiedVisibility'] = modified_score
+                    
+                    results['total_optimized'] += 1
+                    dimension_results['optimized'] += 1
+                    
+                    improvement = modified_score - original_score
+                    if improvement > 0:
+                        results['total_improved'] += 1
+                        dimension_results['improved'] += 1
+                    
+                    # Store detailed results
+                    domain_detail = {
+                        'domain': domain,
+                        'original_sentences_count': len(original_sentences),
+                        'original_score': original_score,
+                        'modified_sentences_count': len(modified_sentences),
+                        'modified_score': modified_score,
+                        'improvement': improvement
+                    }
+                    dimension_results['details'].append(domain_detail)
+                    
+                    print(f"    ✅ {domain}: {original_score:.4f} → {modified_score:.4f} ({improvement:+.4f})")
+                    
+                except Exception as e:
+                    print(f"    ❌ Error optimizing {domain}: {e}")
+                    continue
+            
+            results['dimensions'][dimension] = dimension_results
+            print(f"  📊 Dimension {dimension}: {dimension_results['optimized']}/{dimension_results['domains']} optimized, {dimension_results['improved']} improved")
+        
+        # Update MongoDB document
+        try:
+            update_result = collection.update_one(
+                {'normalizedBrandUrl': normalized_brand_url},
+                {
+                    '$set': {
+                        'websiteContent': website_content,
+                        'sampledTime': datetime.datetime.utcnow()
+                    }
+                }
+            )
+            
+            if update_result.modified_count > 0:
+                print(f"\n✅ Successfully updated MongoDB document for {brand_name}")
+            else:
+                print(f"\n⚠️ No changes made to MongoDB document for {brand_name}")
+                
+        except Exception as e:
+            print(f"\n❌ Error updating MongoDB: {e}")
+            raise
+        
+        # Print final summary
+        print(f"\n🎉 Brand optimization completed!")
+        print(f"   📊 Total domains processed: {results['total_domains']}")
+        print(f"   ✅ Total domains optimized: {results['total_optimized']}")
+        print(f"   📈 Total domains improved: {results['total_improved']}")
+        print(f"   📉 Improvement rate: {(results['total_improved']/max(results['total_optimized'], 1)*100):.1f}%")
+        
+        return results
 
 async def main():
     """Main inference function"""
@@ -359,7 +568,7 @@ async def main():
     # Task selection
     parser.add_argument(
         '--task',
-        choices=['predict', 'generate', 'optimize'],
+        choices=['predict', 'generate', 'optimize', 'optimize_all'],
         default='optimize',
         help='Task to perform'
     )
@@ -368,23 +577,24 @@ async def main():
     parser.add_argument(
         '--sentences',
         nargs='+',
-        required=True,
-        help='List of sentences to process'
+        help='List of sentences to process (required for predict, generate, optimize)'
     )
     parser.add_argument(
         '--dimension',
-        required=True,
-        help='Content dimension'
+        help='Content dimension (required for predict, generate, optimize)'
     )
     parser.add_argument(
         '--domain',
-        required=True,
-        help='Domain name'
+        help='Domain name (required for predict, generate, optimize)'
     )
     parser.add_argument(
         '--brand_name',
         default='Unknown Brand',
         help='Brand name for visibility scoring'
+    )
+    parser.add_argument(
+        '--brand_url',
+        help='Brand URL for optimize_all task'
     )
     
     # Generation parameters
@@ -397,6 +607,14 @@ async def main():
     
     args = parser.parse_args()
     
+    # Validate arguments based on task
+    if args.task in ['predict', 'generate', 'optimize']:
+        if not args.sentences or not args.dimension or not args.domain:
+            parser.error(f"Task '{args.task}' requires --sentences, --dimension, and --domain")
+    elif args.task == 'optimize_all':
+        if not args.brand_url:
+            parser.error("Task 'optimize_all' requires --brand_url")
+    
     # Initialize inference
     inference = ModelInference(
         reward_model_path=args.reward_model,
@@ -404,10 +622,13 @@ async def main():
     )
     
     print(f"\n🎯 Task: {args.task}")
-    print(f"📝 Sentences: {args.sentences}")
-    print(f"🏷️ Dimension: {args.dimension}")
-    print(f"🌐 Domain: {args.domain}")
-    print(f"🏢 Brand: {args.brand_name}")
+    if args.task == 'optimize_all':
+        print(f"🏢 Brand URL: {args.brand_url}")
+    else:
+        print(f"📝 Sentences: {args.sentences}")
+        print(f"🏷️ Dimension: {args.dimension}")
+        print(f"🌐 Domain: {args.domain}")
+        print(f"🏢 Brand: {args.brand_name}")
     print("-" * 50)
     
     try:
@@ -446,6 +667,25 @@ async def main():
             print(f"\n🔄 Iteration Details:")
             for iteration in results['iterations']:
                 print(f"   Iteration {iteration['iteration']}: {iteration['score']:.4f} → {iteration['improved_score']:.4f} ({iteration['improvement']:+.4f})")
+        
+        elif args.task == 'optimize_all':
+            # Optimize entire brand and update MongoDB
+            results = await inference.optimize_all_brand(args.brand_url, args.iterations)
+            
+            print(f"\n📊 Brand Optimization Summary:")
+            print(f"   Brand: {results['brand_name']}")
+            print(f"   Total Domains: {results['total_domains']}")
+            print(f"   Optimized: {results['total_optimized']}")
+            print(f"   Improved: {results['total_improved']}")
+            print(f"   Success Rate: {(results['total_optimized']/max(results['total_domains'], 1)*100):.1f}%")
+            print(f"   Improvement Rate: {(results['total_improved']/max(results['total_optimized'], 1)*100):.1f}%")
+            
+            # Show dimension breakdown
+            print(f"\n📏 Dimension Breakdown:")
+            for dimension, dim_results in results['dimensions'].items():
+                print(f"   {dimension}: {dim_results['optimized']}/{dim_results['domains']} optimized, {dim_results['improved']} improved")
+            
+            print(f"\n✅ MongoDB FullWebContentCache updated successfully!")
     
     except Exception as e:
         print(f"❌ Error: {e}")

@@ -33,6 +33,20 @@ const CONTENT_DIMENSIONS = [
   'After-Sales Support / Community / Loyalty'
 ]
 
+const LARGE_SITE_LIST = [
+  'wikipedia.org',
+  'youtube.com',
+  'reddit.com',
+  'quora.com',
+  'instagram.com',
+  'tiktok.com',
+  'x.com',
+  'linkedin.com',
+  'forbes.com',
+  'medium.com',
+  'g2.com'
+]
+
 const CONTENT_DIMENSIONS_DESCRIPTIONS = {
   'Functionality': 'What the product or brand does. Its core functions, features, what problem it solves.',
   'Quality': 'The standard or grade of the product: materials, build, craftsmanship, durability, excellence in execution.',
@@ -194,7 +208,7 @@ async function scrapePageWithFirecrawl(url: string, brandName: string): Promise<
       }
       // If JSON is an object, try to extract text content
       else if (result.json && typeof result.json === 'object') {
-        summary = result.json.summary || JSON.stringify(result.json)
+        summary = (result.json as any).summary || JSON.stringify(result.json)
         console.log(`    ✅ Scraped successfully using JSON object (${summary.length} chars)`)
       }
       // Fallback to markdown if available
@@ -345,9 +359,20 @@ async function analyzeWebContentForBrands(brandUrls: string[]): Promise<void> {
       // Initialize the website content structure
       const websiteContent: WebsiteContent = {}
       
-      // Initialize all dimensions
+      // Initialize all dimensions with large sites pre-populated
       CONTENT_DIMENSIONS.forEach(dimension => {
         websiteContent[dimension] = {}
+        
+        // Pre-initialize all large sites with empty sentence arrays
+        LARGE_SITE_LIST.forEach(largeSite => {
+          const normalizedLargeSite = normalizeUrl(`https://${largeSite}`)
+          websiteContent[dimension][normalizedLargeSite] = {
+            sentences: [],
+            visibility: 0,
+            modifiedSentences: [],
+            modifiedVisibility: 0
+          }
+        })
       })
       
       console.log(`🌐 Processing ${searchResults.length} search results...`)
@@ -390,7 +415,9 @@ async function analyzeWebContentForBrands(brandUrls: string[]): Promise<void> {
               if (!websiteContent[dimension][normalizedDomain]) {
                 websiteContent[dimension][normalizedDomain] = {
                   sentences: [],
-                  visibility: 0
+                  visibility: 0,
+                  modifiedSentences: [],
+                  modifiedVisibility: 0
                 }
               }
               websiteContent[dimension][normalizedDomain].sentences.push(...sentences)

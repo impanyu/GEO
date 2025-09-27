@@ -29,8 +29,10 @@ export async function closeDatabaseConnection(): Promise<void> {
 // Data model interfaces
 export interface ContentSnippets {
   [normalizedDomain: string]: {
-    sentences: string[] // list of sentences
+    sentences: string[] // list of original sentences
     visibility: number  // floating number, default 0
+    modifiedSentences: string[] // list of modified sentences (for training)
+    modifiedVisibility: number  // floating number, default 0 (for modified sentences)
   }
 }
 
