@@ -467,20 +467,55 @@ class GRPOModel(nn.Module):
             model_kwargs['token'] = hf_token
         
         if "llama" in model_name.lower():
-            # For distributed training, don't use device_map="auto"
-            if distributed:
-                self.backbone = LlamaForCausalLM.from_pretrained(
-                    model_name,
-                    dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                    **model_kwargs
-                )
-            else:
-                self.backbone = LlamaForCausalLM.from_pretrained(
-                    model_name,
-                    dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                    device_map="auto" if torch.cuda.is_available() else None,
-                    **model_kwargs
-                )
+            # Choose loading strategy based on distributed training requirements
+            try:
+                if distributed:
+                    # For multi-GPU: Use device_map="auto" with DataParallel (not DDP)
+                    # This allows model sharding across all available GPUs
+                    self.backbone = LlamaForCausalLM.from_pretrained(
+                        model_name,
+                        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                        device_map="auto",  # Shard model across all available devices
+                        attn_implementation="flash_attention_2",
+                        low_cpu_mem_usage=True,
+                        **model_kwargs
+                    )
+                    logger.info("✅ Multi-GPU: Using device_map='auto' with model sharding")
+                else:
+                    # For single GPU: Standard approach
+                    self.backbone = LlamaForCausalLM.from_pretrained(
+                        model_name,
+                        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                        device_map="auto" if torch.cuda.is_available() else None,
+                        attn_implementation="flash_attention_2",
+                        low_cpu_mem_usage=True,
+                        **model_kwargs
+                    )
+                    logger.info("✅ Single GPU: Using device_map='auto'")
+                logger.info("✅ Using Flash Attention 2 for memory efficiency")
+            except Exception as e:
+                logger.warning(f"⚠️ Flash Attention 2 not available: {e}")
+                logger.info("🔄 Falling back to standard attention")
+                if distributed:
+                    # Multi-GPU fallback with model sharding
+                    self.backbone = LlamaForCausalLM.from_pretrained(
+                        model_name,
+                        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                        device_map="auto",  # Shard model across all available devices
+                        low_cpu_mem_usage=True,
+                        **model_kwargs
+                    )
+                    logger.info("✅ Multi-GPU fallback: Using device_map='auto' with model sharding")
+                else:
+                    # Single GPU fallback
+                    self.backbone = LlamaForCausalLM.from_pretrained(
+                        model_name,
+                        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                        device_map="auto" if torch.cuda.is_available() else None,
+                        low_cpu_mem_usage=True,
+                        **model_kwargs
+                    )
+                    logger.info("✅ Single GPU fallback: Using device_map='auto'")
         else:
             # Generic causal LM (GPT-2, DialoGPT, etc.)
             self.backbone = AutoModelForCausalLM.from_pretrained(
@@ -489,6 +524,11 @@ class GRPOModel(nn.Module):
             )
         
         # No value head needed for pure GRPO!
+        
+        # Enable gradient checkpointing for memory efficiency
+        if torch.cuda.is_available():
+            self.backbone.gradient_checkpointing_enable()
+            logger.info("✅ Gradient checkpointing enabled for memory efficiency")
         
         # Optional: Use LoRA for large models to reduce memory
         if use_lora:
@@ -583,14 +623,15 @@ class GRPOTrainer:
         # Initialize GRPO model (no value head)
         self.model = GRPOModel(config.model_name, use_lora=use_lora, distributed=config.distributed)
         
-        # Move to device and setup distributed training
+        # Setup multi-GPU training
         if config.distributed:
-            # For distributed training, move model to specific GPU
-            self.model.to(self.device)
-            # Wrap with DistributedDataParallel
-            self.model = DDP(self.model, device_ids=[config.local_rank], output_device=config.local_rank)
+            # For multi-GPU with device_map="auto", we use DataParallel
+            # (model is already sharded across devices by device_map)
+            available_gpus = list(range(torch.cuda.device_count()))
+            self.model = torch.nn.DataParallel(self.model, device_ids=available_gpus)
             if self.is_main_process:
-                logger.info(f"🔄 Model wrapped with DistributedDataParallel on GPU {config.local_rank}")
+                logger.info(f"🔄 Model wrapped with DataParallel across {len(available_gpus)} GPUs")
+                logger.info(f"🎯 Using model sharding + DataParallel for memory efficiency")
         else:
             # Single GPU or CPU training
             if not torch.cuda.is_available() or not use_lora:
@@ -630,8 +671,8 @@ class GRPOTrainer:
         # Store current training mode
         was_training = self.model.training
         
-        # Determine target device - handle DDP wrapper
-        if isinstance(self.model, DDP):
+        # Determine target device - handle DDP and DataParallel wrappers
+        if isinstance(self.model, (DDP, torch.nn.DataParallel)):
             target_device = next(self.model.module.parameters()).device
         else:
             target_device = next(self.model.parameters()).device
@@ -654,8 +695,8 @@ class GRPOTrainer:
                 # Step 1: Generate sequence using model.generate() (non-differentiable)
                 self.model.eval()
                 with torch.no_grad():
-                    # Handle DDP wrapper for generation
-                    model_for_generation = self.model.module if isinstance(self.model, DDP) else self.model
+                    # Handle DDP and DataParallel wrapper for generation
+                    model_for_generation = self.model.module if isinstance(self.model, (DDP, torch.nn.DataParallel)) else self.model
                     outputs = model_for_generation.generate(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
@@ -731,6 +772,10 @@ class GRPOTrainer:
                 # Store for this input's baseline calculation
                 input_sample_rewards.append(reward)
                 input_sample_log_probs.append(sequence_log_prob)
+                
+                # Clear GPU cache after each sample to prevent memory buildup
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             
             # Calculate baseline for this input (mean of all its samples)
             input_baseline = sum(input_sample_rewards) / len(input_sample_rewards)
@@ -1070,8 +1115,8 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
     
     def save_model(self, epoch: int):
         """Save model checkpoint"""
-        # Handle DDP wrapper for state_dict
-        model_for_saving = self.model.module if isinstance(self.model, DDP) else self.model
+        # Handle DDP and DataParallel wrapper for state_dict
+        model_for_saving = self.model.module if isinstance(self.model, (DDP, torch.nn.DataParallel)) else self.model
         
         checkpoint = {
             'epoch': epoch,
@@ -1143,7 +1188,7 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
             )
         
         # Setup optimizer - get parameters from the correct model
-        model_for_optimizer = self.model.module if isinstance(self.model, DDP) else self.model
+        model_for_optimizer = self.model.module if isinstance(self.model, (DDP, torch.nn.DataParallel)) else self.model
         optimizer = optim.AdamW(model_for_optimizer.parameters(), lr=self.config.learning_rate)
         
         # Training loop

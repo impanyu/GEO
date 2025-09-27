@@ -7,11 +7,12 @@ set -e
 
 # Default values
 NUM_GPUS=8
-BATCH_SIZE=1  # Per GPU batch size
+BATCH_SIZE=1  # Per GPU batch size (very small for memory efficiency)
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
 EPOCHS=5
-NUM_SAMPLES=3  # Reduced for multi-GPU to save memory
+NUM_SAMPLES=2  # Further reduced for multi-GPU to save memory
 OUTPUT_DIR="./grpo_model_output_multi_gpu"
+MAX_LENGTH=256  # Reduced sequence length
 
 # Print GPU info
 echo "🔍 Checking GPU availability..."
@@ -43,6 +44,9 @@ echo "   🎲 Samples per input: $NUM_SAMPLES"
 echo "   📁 Output: $OUTPUT_DIR"
 echo ""
 
+# Set PyTorch CUDA memory allocation strategy
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 # Run training with multi-GPU support
 python policy_model.py \
     $BRAND_URLS \
@@ -53,6 +57,7 @@ python policy_model.py \
     --num_samples_per_input $NUM_SAMPLES \
     --output_dir "$OUTPUT_DIR" \
     --use_lora \
-    --gradient_accumulation_steps 2
+    --gradient_accumulation_steps 8 \
+    --max_length $MAX_LENGTH
 
 echo "✅ Multi-GPU training completed!"
