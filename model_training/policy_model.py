@@ -1205,13 +1205,16 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
                 
                 # Synchronize gradients for model parallelism
-                if self.config.distributed and hasattr(self.model.backbone, 'hf_device_map'):
-                    # For model parallelism, ensure gradient sync across processes
-                    if dist.is_initialized():
-                        for param in self.model.parameters():
-                            if param.grad is not None:
-                                dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
-                                param.grad.data /= self.config.world_size
+                if self.config.distributed:
+                    # Get the actual model (unwrap DDP if needed)
+                    actual_model = self.model.module if isinstance(self.model, DDP) else self.model
+                    if hasattr(actual_model.backbone, 'hf_device_map'):
+                        # For model parallelism, ensure gradient sync across processes
+                        if dist.is_initialized():
+                            for param in self.model.parameters():
+                                if param.grad is not None:
+                                    dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+                                    param.grad.data /= self.config.world_size
                 
                 optimizer.step()
                 optimizer.zero_grad()
@@ -1333,7 +1336,9 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
         # Use DistributedSampler for multi-GPU training
         if self.config.distributed:
             # Check if model is sharded (model parallelism) or replicated (data parallelism)
-            model_uses_device_map = hasattr(self.model.backbone, 'hf_device_map') if not isinstance(self.model, DDP) else False
+            # Get the actual model (unwrap DDP if needed)
+            actual_model = self.model.module if isinstance(self.model, DDP) else self.model
+            model_uses_device_map = hasattr(actual_model.backbone, 'hf_device_map')
             
             if model_uses_device_map:
                 # Model parallelism: all processes work on the same data
