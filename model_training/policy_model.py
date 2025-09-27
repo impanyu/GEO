@@ -149,6 +149,7 @@ class GRPOConfig:
     use_lora: bool = False  # Added for large model support
     gradient_accumulation_steps: int = 1  # Added for large models
     baseline_tau: float = 0.95  # Exponential moving average for baseline
+    num_samples_per_input: int = 5  # Number of sequences to sample per input
 
 class SentenceModificationDataset(Dataset):
     """Dataset for sentence modification task"""
@@ -530,109 +531,139 @@ class GRPOTrainer:
         self.baseline_rewards = []  # Track baseline for GRPO
         self.running_baseline = 0.0  # Exponential moving average baseline
     
-    def generate_and_score(self, batch) -> Tuple[List[List[str]], torch.Tensor]:
-        """Generate sentences and calculate log probabilities for GRPO"""
+    async def generate_and_score(self, batch) -> Tuple[List[torch.Tensor], List[float], List[float]]:
+        """
+        Generate sentences and calculate log probabilities for GRPO using hybrid approach:
+        1. Use model.generate() for text generation (non-differentiable)
+        2. Use model.forward() on generated sequences for differentiable log probs
+        3. Sample multiple sequences per input for proper GRPO loss calculation
+        
+        Args:
+            batch: Input batch containing 'input_ids', 'attention_mask', 'brand_name', 'dimension', 'domain'
+            
+        Returns:
+            Tuple of:
+            - all_log_probs: List of log prob tensors for all samples [input_i_sample_j_log_prob, ...]
+            - all_rewards: List of reward scores for all samples [input_i_sample_j_reward, ...]
+            - all_advantages: List of advantages for all samples [input_i_sample_j_advantage, ...]
+        """
         # Store current training mode
         was_training = self.model.training
-        self.model.eval()  # Switch to eval for generation
         
-        # Debug: Check model device
-        try:
-            model_device = next(self.model.parameters()).device
-            logger.debug(f"Model is on device: {model_device}")
-        except Exception as e:
-            logger.debug(f"Could not determine model device: {e}")
+        # Determine target device
+        target_device = next(self.model.parameters()).device
         
-        generated_sentences = []
-        log_probs_list = []
+        # Store ALL samples across all inputs for proper GRPO loss calculation
+        all_log_probs = []  # List of log prob tensors for ALL samples
+        all_rewards = []    # List of reward values for ALL samples  
+        all_advantages = [] # List of advantage values for ALL samples
         
-        # Note: Don't use torch.no_grad() here because we need gradients for GRPO
         for i in range(len(batch['input_ids'])):
-            # Always move to device - let device_map handle the rest
-            input_ids = batch['input_ids'][i:i+1]
-            attention_mask = batch['attention_mask'][i:i+1]
+            # Move to correct device
+            input_ids = batch['input_ids'][i:i+1].to(target_device)
+            attention_mask = batch['attention_mask'][i:i+1].to(target_device)
             
-            # Determine the correct device for the model
-            if hasattr(self.model.backbone, 'hf_device_map') and self.model.backbone.hf_device_map:
-                # Model uses device_map, find the first device
-                first_device = list(self.model.backbone.hf_device_map.values())[0]
-                target_device = f'cuda:{first_device}' if isinstance(first_device, int) else first_device
-            elif hasattr(self.model.backbone, 'device'):
-                # Model has a device attribute
-                target_device = self.model.backbone.device
-            else:
-                # Fall back to checking first parameter device
-                target_device = next(self.model.parameters()).device
+            input_sample_rewards = []  # Collect rewards for this input to calculate baseline
+            input_sample_log_probs = []  # Collect log probs for this input
             
-            # Move tensors to the correct device
-            input_ids = input_ids.to(target_device)
-            attention_mask = attention_mask.to(target_device)
-            
-            # Generate response with sampling
-            outputs = self.model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                max_new_tokens=self.config.max_new_tokens,
-                do_sample=True,
-                temperature=self.config.temperature,
-                top_k=self.config.top_k,
-                top_p=self.config.top_p,
-                pad_token_id=self.tokenizer.pad_token_id,
-                return_dict_in_generate=True,
-                output_scores=True
-            )
-            
-            generated_ids = outputs.sequences[0]
-            
-            # Calculate log probabilities for the generated sequence
-            input_length = input_ids.shape[1]
-            new_token_ids = generated_ids[input_length:]
-            
-            if len(new_token_ids) > 0 and hasattr(outputs, 'scores'):
-                # Calculate log probabilities for generated tokens
-                log_probs = []
-                for j, (score, token_id) in enumerate(zip(outputs.scores, new_token_ids)):
-                    token_log_prob = torch.log_softmax(score, dim=-1)[0, token_id]
-                    log_probs.append(token_log_prob)
+            # Sample multiple sequences for this input
+            for sample_idx in range(self.config.num_samples_per_input):
+                # Step 1: Generate sequence using model.generate() (non-differentiable)
+                self.model.eval()
+                with torch.no_grad():
+                    outputs = self.model.generate(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        max_new_tokens=self.config.max_new_tokens,
+                        do_sample=True,
+                        temperature=self.config.temperature,
+                        top_k=self.config.top_k,
+                        top_p=self.config.top_p,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                    )
                 
-                if log_probs:
-                    # Sum log probabilities (log of product = sum of logs)
-                    log_probs_list.append(torch.stack(log_probs).sum())
-                else:
-                    log_probs_list.append(torch.tensor(0.0, device=target_device, requires_grad=True))
-            else:
-                log_probs_list.append(torch.tensor(0.0, device=target_device, requires_grad=True))
-            
-            # Decode and extract sentences
-            generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
-            
-            # Extract modified sentences from generated text
-            try:
-                if "Modified sentences:" in generated_text:
-                    json_part = generated_text.split("Modified sentences:")[-1].strip()
-                    modified_sentences = json.loads(json_part)
-                    if isinstance(modified_sentences, list):
-                        generated_sentences.append(modified_sentences)
+                # Extract generated sequence (includes input + new tokens)
+                generated_sequence = outputs[0]  # Full sequence
+                input_length = input_ids.shape[1]
+                
+                # Step 2: Use model.forward() on generated sequence for differentiable log probs
+                self.model.train()  # Switch to train mode for differentiable forward pass
+                
+                # Forward pass on the full generated sequence
+                forward_outputs = self.model(
+                    input_ids=generated_sequence.unsqueeze(0), 
+                    attention_mask=torch.ones_like(generated_sequence).unsqueeze(0)
+                )
+                
+                # Calculate log probabilities for the new tokens only
+                logits = forward_outputs.logits[0]  # [seq_len, vocab_size]
+                log_probs = torch.log_softmax(logits, dim=-1)  # [seq_len, vocab_size]
+                
+                # Get log probs for the actual generated tokens (excluding input part)
+                new_token_ids = generated_sequence[input_length:]
+                if len(new_token_ids) > 0:
+                    # Get log probs for each new token at its position
+                    new_token_log_probs = []
+                    for j, token_id in enumerate(new_token_ids):
+                        pos = input_length + j - 1  # Position in logits (shifted by 1)
+                        if pos >= 0 and pos < logits.shape[0]:
+                            token_log_prob = log_probs[pos, token_id]
+                            new_token_log_probs.append(token_log_prob)
+                    
+                    if new_token_log_probs:
+                        # Sum log probabilities for the sequence
+                        sequence_log_prob = torch.stack(new_token_log_probs).sum()
                     else:
-                        generated_sentences.append([str(modified_sentences)])
+                        sequence_log_prob = torch.tensor(0.0, device=target_device, requires_grad=True)
                 else:
-                    generated_sentences.append(batch['original_sentences'][i])
-            except:
-                generated_sentences.append(batch['original_sentences'][i])
-        
-        # Stack log probabilities, ensuring they're on the same device and require gradients
-        if log_probs_list:
-            log_probs = torch.stack(log_probs_list)
-        else:
-            # Get device from first model parameter
-            model_device = next(self.model.parameters()).device
-            log_probs = torch.zeros(len(batch['input_ids']), device=model_device, requires_grad=True)
+                    sequence_log_prob = torch.tensor(0.0, device=target_device, requires_grad=True)
+                
+                # Step 3: Decode and extract sentences for reward calculation
+                generated_text = self.tokenizer.decode(generated_sequence, skip_special_tokens=True)
+                
+                try:
+                    if "Modified sentences:" in generated_text:
+                        json_part = generated_text.split("Modified sentences:")[-1].strip()
+                        modified_sentences = json.loads(json_part)
+                        if isinstance(modified_sentences, list):
+                            sentences = modified_sentences
+                        else:
+                            sentences = [str(modified_sentences)]
+                    else:
+                        sentences = batch['original_sentences'][i]
+                except:
+                    sentences = batch['original_sentences'][i]
+                
+                # Step 4: Calculate reward using calculate_rewards_tmp
+                sample_batch = {
+                    'brand_name': [batch['brand_name'][i]],
+                    'dimension': [batch['dimension'][i]],
+                    'domain': [batch['domain'][i]]
+                }
+                rewards = await self.calculate_rewards_tmp(sample_batch, [sentences])
+                reward = rewards[0]
+                
+                # Store for this input's baseline calculation
+                input_sample_rewards.append(reward)
+                input_sample_log_probs.append(sequence_log_prob)
+            
+            # Calculate baseline for this input (mean of all its samples)
+            input_baseline = sum(input_sample_rewards) / len(input_sample_rewards)
+            
+            # Calculate advantages for all samples of this input and add to global lists
+            for j in range(len(input_sample_rewards)):
+                advantage = input_sample_rewards[j] - input_baseline
+                all_log_probs.append(input_sample_log_probs[j])
+                all_rewards.append(input_sample_rewards[j])
+                all_advantages.append(advantage)
         
         # Restore original training mode
         if was_training:
             self.model.train()
+        else:
+            self.model.eval()
         
-        return generated_sentences, log_probs
+        return all_log_probs, all_rewards, all_advantages
     
     async def calculate_rewards(self, batch, generated_sentences: List[List[str]]) -> List[float]:
         """Calculate rewards for generated sentences"""
@@ -813,27 +844,32 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
         self.baseline_rewards.append(self.running_baseline)
         logger.debug(f"Baseline updated: {self.running_baseline:.4f}")
     
-    def grpo_loss(self, log_probs: torch.Tensor, rewards: torch.Tensor) -> torch.Tensor:
+    def grpo_loss(self, all_log_probs: List[torch.Tensor], all_advantages: List[float]) -> torch.Tensor:
         """
-        Compute GRPO loss: -log_prob * (reward - baseline)
+        Compute GRPO loss: -sum(log_prob * advantage) for all samples
         
         This is the core of GRPO - we increase probability of actions that 
-        got rewards above baseline, decrease probability of actions below baseline.
+        got advantages above 0, decrease probability of actions below 0.
         
         Args:
-            log_probs: Log probabilities from policy (requires_grad=True)
-            rewards: Reward values (treated as constants, no gradients needed)
+            all_log_probs: List of log probability tensors for all samples (requires_grad=True)
+            all_advantages: List of advantage values for all samples (reward - baseline)
         """
-        # Ensure rewards are detached (treated as constants during backprop)
-        rewards = rewards.detach()
+        if not all_log_probs or not all_advantages:
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
         
-        # Center rewards around baseline
-        baseline = torch.tensor(self.running_baseline, device=self.device)
-        advantages = rewards - baseline
+        # Convert advantages to tensor (detached as they're constants)
+        advantages_tensor = torch.tensor(all_advantages, device=self.device, requires_grad=False)
         
-        # GRPO gradient: ∇θ J = ∇θ log π(a|s) * (R - b)
-        # Only log_probs contributes gradients, advantages are constants
-        loss = -(log_probs * advantages).mean()
+        # Stack all log probs (these have gradients)
+        log_probs_tensor = torch.stack(all_log_probs)
+        
+        # GRPO gradient: ∇θ J = ∇θ Σ log π(a_i|s_i) * A_i
+        # where A_i = R_i - b_i (advantage for sample i)
+        loss = -(log_probs_tensor * advantages_tensor).sum()
+        
+        # Normalize by number of samples for stable gradients
+        loss = loss / len(all_log_probs)
         
         return loss
     
@@ -850,21 +886,20 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
         optimizer.zero_grad()
         
         for step, batch in enumerate(tqdm(data_loader, desc="GRPO Training")):
-            # Generate sentences and get log probabilities
-            generated_sentences, log_probs = self.generate_and_score(batch)
+            # Generate all samples and get log probabilities, rewards, and advantages
+            all_log_probs, all_rewards, all_advantages = await self.generate_and_score(batch)
             
-            # Calculate rewards
-            rewards = await self.calculate_rewards_tmp(batch, generated_sentences)
-            rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device=self.device)
-            
-            total_reward += sum(rewards)
+            # Calculate average reward for tracking
+            avg_reward = sum(all_rewards) / len(all_rewards) if all_rewards else 0.0
+            total_reward += avg_reward
             num_batches += 1
             
-            # Update baseline (exponential moving average)
+            # Update global baseline (exponential moving average) for tracking only
+            rewards_tensor = torch.tensor(all_rewards, dtype=torch.float32, device=self.device)
             self.update_baseline(rewards_tensor)
             
-            # Compute GRPO loss
-            loss = self.grpo_loss(log_probs, rewards_tensor)
+            # Compute GRPO loss using all samples and their advantages
+            loss = self.grpo_loss(all_log_probs, all_advantages)
             
             # Scale loss for gradient accumulation
             loss = loss / accumulation_steps
@@ -874,6 +909,11 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
             
             # Store loss
             self.policy_losses.append(loss.item() * accumulation_steps)
+            
+            # Log statistics
+            num_samples = len(all_rewards)
+            positive_advantages = sum(1 for adv in all_advantages if adv > 0)
+            logger.debug(f"Step {step}: {num_samples} samples, {positive_advantages}/{num_samples} positive advantages, avg_reward={avg_reward:.3f}")
             
             # Update every accumulation_steps or at the end
             if (step + 1) % accumulation_steps == 0 or (step + 1) == len(data_loader):
@@ -984,6 +1024,9 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
     async def train(self, train_data: List[Dict]):
         """Main GRPO training loop"""
         logger.info("Starting GRPO (Generative Reinforcement Policy Optimization) training")
+        logger.info(f"🔬 Proper GRPO: {self.config.num_samples_per_input} samples per input, all samples used for loss")
+        logger.info(f"🎯 Using differentiable forward pass for log probabilities")
+        logger.info(f"📊 Loss: -Σ(log_prob_i * advantage_i) for all samples")
         
         # Create dataset and dataloader with custom collate function
         dataset = SentenceModificationDataset(train_data, self.tokenizer, self.config.max_length)
@@ -1002,7 +1045,7 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
             logger.info(f"GRPO Epoch {epoch}/{self.config.num_epochs}")
             
             avg_reward = await self.train_epoch(data_loader, optimizer)
-            logger.info(f"Average Reward: {avg_reward:.4f}, Baseline: {self.running_baseline:.4f}")
+            logger.info(f"Average Reward: {avg_reward:.4f}, Global Baseline: {self.running_baseline:.4f}")
             
             # Save checkpoint
             if epoch % self.config.save_every == 0:
@@ -1139,6 +1182,12 @@ def main():
         default=512,
         help='Maximum sequence length'
     )
+    parser.add_argument(
+        '--num_samples_per_input',
+        type=int,
+        default=5,
+        help='Number of sequences to sample per input for baseline estimation'
+    )
     
     args = parser.parse_args()
     
@@ -1171,7 +1220,8 @@ def main():
         output_dir=args.output_dir,
         use_lora=args.use_lora,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        max_length=args.max_length
+        max_length=args.max_length,
+        num_samples_per_input=args.num_samples_per_input
     )
     
     # Load training data from MongoDB
