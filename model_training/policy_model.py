@@ -574,6 +574,12 @@ class GRPOTrainer:
     def __init__(self, config: GRPOConfig):
         self.config = config
         
+        # Set memory allocation configuration for better memory management
+        if torch.cuda.is_available():
+            import os
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+            logger.info("✅ Set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True for memory efficiency")
+        
         # Setup distributed training if enabled
         if config.distributed:
             setup_distributed(config.rank, config.world_size, config.master_addr, config.master_port)
@@ -782,6 +788,9 @@ class GRPOTrainer:
                 # Clear GPU cache after each sample to prevent memory buildup
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                    # Additional memory cleanup
+                    if hasattr(torch.cuda, 'synchronize'):
+                        torch.cuda.synchronize()
             
             # Calculate baseline for this input (mean of all its samples)
             input_baseline = sum(input_sample_rewards) / len(input_sample_rewards)
@@ -1043,8 +1052,19 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
             # Scale loss for gradient accumulation
             loss = loss / accumulation_steps
             
-            # Backward pass
-            loss.backward()
+            # Backward pass with memory management
+            try:
+                loss.backward()
+            except torch.cuda.OutOfMemoryError as e:
+                logger.warning(f"⚠️ CUDA OOM during backward pass: {e}")
+                logger.info("🧹 Attempting memory cleanup and retry")
+                # Clear cache and retry
+                torch.cuda.empty_cache()
+                if hasattr(torch.cuda, 'synchronize'):
+                    torch.cuda.synchronize()
+                # Reduce computation temporarily
+                with torch.autograd.set_detect_anomaly(False):
+                    loss.backward()
             
             # Store loss
             self.policy_losses.append(loss.item() * accumulation_steps)
@@ -1406,9 +1426,12 @@ def main():
     learning_rate = args.learning_rate
     if "llama" in args.model.lower() and "8b" in args.model.lower():
         logger.info("🔥 Detected Llama 8B model - auto-adjusting settings for large model")
-        if args.gradient_accumulation_steps == 1:
-            logger.info(f"   Setting gradient accumulation steps to 4")
-            args.gradient_accumulation_steps = 4
+        if args.gradient_accumulation_steps <= 4:
+            logger.info(f"   Setting gradient accumulation steps to 8 for memory efficiency")
+            args.gradient_accumulation_steps = 8
+        if args.batch_size > 1:
+            logger.info(f"   Reducing batch size from {args.batch_size} to 1 for memory efficiency")
+            args.batch_size = 1
         if not args.use_lora and not args.no_lora:
             logger.info(f"   Auto-enabling LoRA")
             args.use_lora = True
