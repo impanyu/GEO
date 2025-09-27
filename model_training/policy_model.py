@@ -115,20 +115,35 @@ logger = logging.getLogger(__name__)
 
 def setup_distributed(rank: int, world_size: int, master_addr: str = "localhost", master_port: str = "12355"):
     """Initialize distributed training environment"""
-    os.environ['MASTER_ADDR'] = master_addr
-    os.environ['MASTER_PORT'] = master_port
-    
-    # Initialize the process group
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
-    
-    # Set the current CUDA device
-    torch.cuda.set_device(rank)
-    
-    logger.info(f"🚀 Distributed training initialized: rank {rank}/{world_size}")
+    try:
+        os.environ['MASTER_ADDR'] = master_addr
+        os.environ['MASTER_PORT'] = master_port
+        
+        # Set the current CUDA device first
+        torch.cuda.set_device(rank)
+        
+        # Initialize the process group with timeout
+        dist.init_process_group(
+            "nccl", 
+            rank=rank, 
+            world_size=world_size,
+            timeout=torch.distributed.default_pg_timeout
+        )
+        
+        logger.info(f"🚀 Distributed training initialized: rank {rank}/{world_size}")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize distributed training for rank {rank}: {e}")
+        raise
 
 def cleanup_distributed():
     """Clean up distributed training environment"""
-    dist.destroy_process_group()
+    try:
+        if dist.is_initialized():
+            dist.destroy_process_group()
+            logger.debug("🧹 Distributed training cleaned up")
+    except Exception as e:
+        logger.warning(f"⚠️ Error during distributed cleanup: {e}")
 
 def is_main_process(rank: int = None) -> bool:
     """Check if this is the main process (rank 0)"""
@@ -436,10 +451,11 @@ class RewardCalculator:
 class GRPOModel(nn.Module):
     """Pure GRPO model for sentence modification - no critic/value function"""
     
-    def __init__(self, model_name: str, use_lora: bool = False):
+    def __init__(self, model_name: str, use_lora: bool = False, distributed: bool = False):
         super().__init__()
         self.model_name = model_name
         self.use_lora = use_lora
+        self.distributed = distributed
         
         # Load model based on architecture
         logger.info(f"Loading GRPO model: {model_name}")
@@ -451,12 +467,20 @@ class GRPOModel(nn.Module):
             model_kwargs['token'] = hf_token
         
         if "llama" in model_name.lower():
-            self.backbone = LlamaForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto" if torch.cuda.is_available() else None,
-                **model_kwargs
-            )
+            # For distributed training, don't use device_map="auto"
+            if distributed:
+                self.backbone = LlamaForCausalLM.from_pretrained(
+                    model_name,
+                    dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                    **model_kwargs
+                )
+            else:
+                self.backbone = LlamaForCausalLM.from_pretrained(
+                    model_name,
+                    dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                    device_map="auto" if torch.cuda.is_available() else None,
+                    **model_kwargs
+                )
         else:
             # Generic causal LM (GPT-2, DialoGPT, etc.)
             self.backbone = AutoModelForCausalLM.from_pretrained(
@@ -557,7 +581,7 @@ class GRPOTrainer:
             logger.info("🔥 Auto-enabling LoRA for Llama 8B model")
         
         # Initialize GRPO model (no value head)
-        self.model = GRPOModel(config.model_name, use_lora=use_lora)
+        self.model = GRPOModel(config.model_name, use_lora=use_lora, distributed=config.distributed)
         
         # Move to device and setup distributed training
         if config.distributed:
@@ -630,7 +654,9 @@ class GRPOTrainer:
                 # Step 1: Generate sequence using model.generate() (non-differentiable)
                 self.model.eval()
                 with torch.no_grad():
-                    outputs = self.model.generate(
+                    # Handle DDP wrapper for generation
+                    model_for_generation = self.model.module if isinstance(self.model, DDP) else self.model
+                    outputs = model_for_generation.generate(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
                         max_new_tokens=self.config.max_new_tokens,
@@ -1044,9 +1070,12 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
     
     def save_model(self, epoch: int):
         """Save model checkpoint"""
+        # Handle DDP wrapper for state_dict
+        model_for_saving = self.model.module if isinstance(self.model, DDP) else self.model
+        
         checkpoint = {
             'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': model_for_saving.state_dict(),
             'config': self.config,
             'episode_rewards': self.episode_rewards,
             'policy_losses': self.policy_losses,
@@ -1113,8 +1142,9 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
                 collate_fn=self.collate_fn
             )
         
-        # Setup optimizer
-        optimizer = optim.AdamW(self.model.parameters(), lr=self.config.learning_rate)
+        # Setup optimizer - get parameters from the correct model
+        model_for_optimizer = self.model.module if isinstance(self.model, DDP) else self.model
+        optimizer = optim.AdamW(model_for_optimizer.parameters(), lr=self.config.learning_rate)
         
         # Training loop
         for epoch in range(1, self.config.num_epochs + 1):
