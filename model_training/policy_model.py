@@ -1157,7 +1157,7 @@ Extract the modified sentences from the generated text and return them as a JSON
 
 If you cannot find valid modified sentences, return the original sentences as a JSON list.
 
-Return ONLY a valid JSON array of strings, nothing else.
+Return ONLY a valid JSON array of strings, nothing else. Do not wrap in markdown code blocks or add any other formatting.
 """
 
             # Prepare request
@@ -1197,9 +1197,24 @@ Return ONLY a valid JSON array of strings, nothing else.
             # Extract and parse response
             content = result.get('choices', [{}])[0].get('message', {}).get('content', original_json)
             
+            # Clean the content - remove markdown code blocks if present
+            content = content.strip()
+            if content.startswith('```json'):
+                # Remove ```json from start
+                content = content[7:]
+            elif content.startswith('```'):
+                # Remove ``` from start
+                content = content[3:]
+            
+            if content.endswith('```'):
+                # Remove ``` from end
+                content = content[:-3]
+            
+            content = content.strip()
+            
             # Parse the JSON response
             try:
-                extracted_sentences = json.loads(content.strip())
+                extracted_sentences = json.loads(content)
                 if isinstance(extracted_sentences, list):
                     # Ensure all items are strings
                     sentences = [str(sentence) for sentence in extracted_sentences]
