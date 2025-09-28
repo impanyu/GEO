@@ -693,9 +693,16 @@ export default function FullWebContentPage() {
                                             <Sparkles className="w-4 h-4 text-green-600" />
                                             <h5 className="font-semibold text-green-900">Modified Content</h5>
                                             {!isOldFormat && modifiedVisibility > 0 && (
-                                              <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
-                                                Visibility: {(modifiedVisibility * 100).toFixed(1)}%
-                                              </span>
+                                              <div className="flex items-center space-x-2">
+                                                <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
+                                                  Visibility: {(modifiedVisibility * 100).toFixed(1)}%
+                                                </span>
+                                                {visibility > 0 && modifiedVisibility > visibility && (
+                                                  <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full font-medium">
+                                                    +{((modifiedVisibility - visibility) * 100).toFixed(1)}%
+                                                  </span>
+                                                )}
+                                              </div>
                                             )}
                                           </div>
                                           <div className="space-y-2">

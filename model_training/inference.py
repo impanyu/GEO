@@ -820,7 +820,7 @@ Output the modification suggestions as a paragraph after semicolon:"""
                 original_sentences = domain_data.get('sentences', [])
                 
                 # Skip if no sentences
-                if not original_sentences or len(original_sentences) == 0:
+                if not original_sentences:
                     print(f"  ⏭️ Skipping {domain} (no sentences)")
                     
                     # Store detailed results for skipped domain
