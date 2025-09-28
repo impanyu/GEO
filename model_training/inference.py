@@ -198,7 +198,7 @@ SCORING CRITERIA:
 6. The content dimension also affects the probability of being quoted, if the content dimension tend to be asked more often, the probability of being quoted is higher.
 
 
-PAY ATTENTION: Be conservative in your scoring, unless you are very sure, do not give very high score.
+PAY ATTENTION: Be conservative in your scoring, unless you are very sure, do not give very high score. Normally the score should be between 0 - 0.5.
 
 
 Return ONLY a single floating point number between 0.0 and 1.0 representing the probability score.
@@ -819,6 +819,24 @@ Output the modification suggestions as a paragraph after semicolon:"""
                     dimension_results['details'].append(domain_detail)
                     
                     print(f"    ✅ {domain}: {original_score:.4f} → {modified_score:.4f} ({improvement:+.4f})")
+                    
+                    # Print detailed information for this domain
+                    print(f"    📝 Original Sentences ({len(original_sentences)}):")
+                    for i, sentence in enumerate(original_sentences, 1):
+                        print(f"        {i}. {sentence}")
+                    
+                    print(f"    📊 Original Score: {original_score:.4f}")
+                    
+                    print(f"    💡 Final Suggestions:")
+                    print(f"        {final_suggestions}")
+                    
+                    print(f"    ✨ Modified Sentences ({len(modified_sentences)}):")
+                    for i, sentence in enumerate(modified_sentences, 1):
+                        print(f"        {i}. {sentence}")
+                    
+                    print(f"    📈 Modified Score: {modified_score:.4f}")
+                    print(f"    🎯 Improvement: {improvement:+.4f}")
+                    print("    " + "-" * 80)
                     
                 except Exception as e:
                     error_msg = str(e)
