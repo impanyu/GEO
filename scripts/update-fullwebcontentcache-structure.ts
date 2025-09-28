@@ -89,7 +89,8 @@ async function updateFullWebContentCacheStructure(): Promise<void> {
               sentences: [],
               visibility: 0,
               modifiedSentences: [],
-              modifiedVisibility: 0
+              modifiedVisibility: 0,
+              modificationSuggestions: ''
             }
             hasChanges = true
             console.log(`    ➕ Added ${largeSite} to ${dimension}`)
@@ -102,6 +103,10 @@ async function updateFullWebContentCacheStructure(): Promise<void> {
             }
             if (!websiteContent[dimension][normalizedLargeSite].hasOwnProperty('modifiedVisibility')) {
               websiteContent[dimension][normalizedLargeSite].modifiedVisibility = 0
+              entryUpdated = true
+            }
+            if (!websiteContent[dimension][normalizedLargeSite].hasOwnProperty('modificationSuggestions')) {
+              websiteContent[dimension][normalizedLargeSite].modificationSuggestions = ''
               entryUpdated = true
             }
             if (entryUpdated) {
@@ -122,6 +127,10 @@ async function updateFullWebContentCacheStructure(): Promise<void> {
           }
           if (!domainData.hasOwnProperty('modifiedVisibility')) {
             domainData.modifiedVisibility = 0
+            entryUpdated = true
+          }
+          if (!domainData.hasOwnProperty('modificationSuggestions')) {
+            domainData.modificationSuggestions = ''
             entryUpdated = true
           }
           

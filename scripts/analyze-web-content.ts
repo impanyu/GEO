@@ -370,7 +370,8 @@ async function analyzeWebContentForBrands(brandUrls: string[]): Promise<void> {
             sentences: [],
             visibility: 0,
             modifiedSentences: [],
-            modifiedVisibility: 0
+            modifiedVisibility: 0,
+            modificationSuggestions: ''
           }
         })
       })
@@ -417,7 +418,8 @@ async function analyzeWebContentForBrands(brandUrls: string[]): Promise<void> {
                   sentences: [],
                   visibility: 0,
                   modifiedSentences: [],
-                  modifiedVisibility: 0
+                  modifiedVisibility: 0,
+                  modificationSuggestions: ''
                 }
               }
               websiteContent[dimension][normalizedDomain].sentences.push(...sentences)

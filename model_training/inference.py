@@ -287,20 +287,163 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
             print(f"Error calling OpenRouter API: {e}")
             return 0.0
     
+    async def _extract_and_apply_suggestions_with_gpt4o(
+        self, 
+        suggestions: str, 
+        original_sentences: list, 
+        brand_name: str, 
+        dimension: str, 
+        domain: str
+    ) -> list:
+        """
+        Apply modification suggestions to create modified sentences using GPT-4o (same as policy model)
+        
+        Args:
+            suggestions: The modification suggestions text
+            original_sentences: The original input sentences
+            brand_name: Brand name for context
+            dimension: Content dimension for context
+            domain: Domain for context
+            
+        Returns:
+            List of modified sentences based on the suggestions
+        """
+        try:
+            # Check for API key
+            openrouter_api_key = os.getenv('OPENROUTER_API_KEY')
+            if not openrouter_api_key:
+                print("OPENROUTER_API_KEY not found in environment")
+                return original_sentences  # Fallback to original sentences
+            
+            # Create application prompt (same as policy model)
+            original_json = json.dumps(original_sentences)
+            application_prompt = f"""
+You are a sentence modification assistant. Your task is to apply the given modification suggestions to improve the original sentences.
+
+CONTEXT:
+- Brand: {brand_name}
+- Dimension: {dimension}
+- Domain: {domain}
+- Original sentences: {original_json}
+
+MODIFICATION SUGGESTIONS:
+{suggestions}
+
+TASK:
+Apply the modification suggestions to get a new list of sentences. Create modified sentences that:
+1. Follow the suggestions provided
+2. Maintain the same meaning as the original sentences
+3. For existing sentences, the modified sentence should be in the same order as the original sentences
+4. Newly added sentences should be added to the end of the modified original sentences
+5. Are returned as a JSON array of strings
+
+GUIDELINES:
+- If suggestions mention specific sentences, apply changes only to those sentences
+- If suggestions are general, apply them to all sentences appropriately
+- Focus on improving keywords, style, structure, and content as suggested
+- Keep the core meaning intact while enhancing brand visibility
+
+Return ONLY a valid JSON array of strings, nothing else. Do not wrap in markdown code blocks or add any other formatting.
+
+Expected Output format: ["Enhanced sentence 1 with better keywords", "Improved sentence 2 with better structure","newly added sentence",...]
+
+"""
+
+            # Prepare request
+            headers = {
+                'Authorization': f'Bearer {openrouter_api_key}',
+                'Content-Type': 'application/json',
+                'HTTP-Referer': 'https://github.com/your-repo',
+                'X-Title': 'GEO Sentence Modification'
+            }
+            
+            data = {
+                'model': 'openai/gpt-4o',
+                'messages': [
+                    {
+                        'role': 'user',
+                        'content': application_prompt
+                    }
+                ],
+                'temperature': 0.1,
+                'max_tokens': 800  # Enough for sentence modification
+            }
+            
+            # Make API call
+            import requests
+            response = requests.post(
+                'https://openrouter.ai/api/v1/chat/completions',
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                print(f"OpenRouter API error during suggestion application: {response.status_code} - {response.text}")
+                return original_sentences  # Fallback to original sentences
+            
+            result = response.json()
+            
+            # Extract and parse response
+            content = result.get('choices', [{}])[0].get('message', {}).get('content', json.dumps(original_sentences))
+            
+            # Clean the content - remove markdown code blocks if present
+            content = content.strip()
+            if content.startswith('```json'):
+                # Remove ```json from start
+                content = content[7:]
+            elif content.startswith('```'):
+                # Remove ``` from start
+                content = content[3:]
+            
+            if content.endswith('```'):
+                # Remove ``` from end
+                content = content[:-3]
+            
+            content = content.strip()
+            
+            # Parse the JSON response
+            try:
+                modified_sentences = json.loads(content)
+                if isinstance(modified_sentences, list):
+                    # Ensure all items are strings
+                    sentences = [str(sentence) for sentence in modified_sentences]
+                    print(f"Successfully applied suggestions to create {len(sentences)} modified sentences using GPT-4o")
+                    return sentences
+                else:
+                    print(f"GPT-4o returned non-list: {modified_sentences}")
+                    return original_sentences
+            except json.JSONDecodeError as e:
+                print(f"Could not parse JSON from GPT-4o suggestion application: '{content}' - {e}")
+                return original_sentences
+                
+        except Exception as e:
+            print(f"Error applying suggestions with GPT-4o: {e}")
+            return original_sentences  # Fallback to original sentences
+    
     def generate_improved_sentences(
         self, 
         sentences: list, 
         dimension: str, 
         domain: str,
+        brand_name: str = "Unknown Brand",
         max_new_tokens: int = 256
-    ) -> list:
-        """Generate improved sentences using policy model"""
+    ) -> dict:
+        """Generate improved sentences using policy model and return both suggestions and modified sentences"""
         if self.policy_model is None:
             raise ValueError("Policy model not loaded")
         
-        # Prepare input prompt
+        # Prepare input prompt (same format as policy model training)
         sentences_json = json.dumps(sentences)
-        prompt = f"Modify the following sentences to improve brand visibility:\nSentences: {sentences_json}\nDimension: {dimension}\nDomain: {domain}\nModified sentences:"
+        prompt = f"""The following sentences is published on {domain} and is about {dimension} for brand {brand_name}. You need to give modification suggestions for the list of sentences to improve brand visibility:
+Sentences: {sentences_json}
+
+Your suggestion include keywords to add/remove, style to adopt, sentence structure to adopt, content/topics to add/remove, etc.
+When your suggestion is only applied to one sentence, you need to specify which sentence to modify, or your suggestion is considered general for all sentences.
+When suggesting new content, you do not need to write specific content, you can point out which aspect/topics of the content to improve.
+When sentence list is empty, you can suggest new content/aspects/topics to add.
+All the suggested new content/topics/aspects should still be related to the brand {brand_name} and {dimension}.
+Output the modification suggestions as a paragraph after semicolon:"""
         
         # Tokenize
         encoding = self.policy_tokenizer(
@@ -325,22 +468,27 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
                 pad_token_id=self.policy_tokenizer.pad_token_id
             )
             
-            # Decode
-            generated_text = self.policy_tokenizer.decode(outputs[0], skip_special_tokens=True)
+            # Decode only the generated part
+            input_length = encoding['input_ids'].shape[1]
+            generated_text = self.policy_tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
             
-            # Extract modified sentences
-            try:
-                if "Modified sentences:" in generated_text:
-                    json_part = generated_text.split("Modified sentences:")[-1].strip()
-                    modified_sentences = json.loads(json_part)
-                    if isinstance(modified_sentences, list):
-                        return modified_sentences
-                    else:
-                        return [str(modified_sentences)]
-                else:
-                    return sentences  # Fallback to original
-            except:
-                return sentences  # Fallback on parsing error
+            # Extract modification suggestions (after semicolon)
+            suggestions = ""
+            if ":" in generated_text:
+                suggestions = generated_text.split(":")[-1].strip()
+            else:
+                suggestions = generated_text.strip()
+            
+            # Apply suggestions using GPT-4o to get modified sentences (same as policy model)
+            modified_sentences = await self._extract_and_apply_suggestions_with_gpt4o(
+                suggestions, sentences, brand_name, dimension, domain
+            )
+            
+            return {
+                'suggestions': suggestions,
+                'modified_sentences': modified_sentences,
+                'original_sentences': sentences
+            }
     
     async def optimize_sentences(
         self, 
@@ -350,50 +498,66 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
         iterations: int = 3,
         brand_name: str = "Unknown Brand"
     ) -> dict:
-        """Iteratively optimize sentences using policy model and OpenRouter API"""
+        """Optimize sentences by trying multiple iterations from original sentences and keeping the best result"""
         if self.policy_model is None:
             raise ValueError("Policy model must be loaded for optimization")
         
+        # Calculate original score once
+        original_score = await self.predict_visibility_tmp(sentences, dimension, domain, brand_name)
+        
         results = {
             'original_sentences': sentences,
+            'original_score': original_score,
             'iterations': [],
-            'final_sentences': sentences,
-            'final_score': 0.0
+            'final_sentences': sentences,  # Start with original as best
+            'final_score': original_score,  # Start with original score as best
+            'final_suggestions': ''
         }
         
-        current_sentences = sentences
+        best_sentences = sentences
+        best_score = original_score
+        best_suggestions = ''
         
         for i in range(iterations):
-            # Predict current visibility using OpenRouter API
-            current_score = await self.predict_visibility_tmp(current_sentences, dimension, domain, brand_name)
+            print(f"Iteration {i+1}: Starting from original sentences")
             
-            # Generate improved sentences
-            improved_sentences = self.generate_improved_sentences(
-                current_sentences, dimension, domain
+            # Always start from original sentences for each iteration
+            generation_results = self.generate_improved_sentences(
+                sentences, dimension, domain, brand_name  # Always use original sentences
             )
             
-            # Predict improved visibility using OpenRouter API
-            improved_score = await self.predict_visibility_tmp(improved_sentences, dimension, domain, brand_name)
+            iteration_sentences = generation_results['modified_sentences']
+            suggestions = generation_results['suggestions']
+            
+            # Predict visibility for this iteration's result
+            iteration_score = await self.predict_visibility_tmp(iteration_sentences, dimension, domain, brand_name)
             
             # Store iteration results
             results['iterations'].append({
                 'iteration': i + 1,
-                'sentences': current_sentences,
-                'score': current_score,
-                'improved_sentences': improved_sentences,
-                'improved_score': improved_score,
-                'improvement': improved_score - current_score
+                'base_sentences': sentences,  # Always original
+                'base_score': original_score,
+                'generated_sentences': iteration_sentences,
+                'generated_score': iteration_score,
+                'improvement': iteration_score - original_score,
+                'suggestions': suggestions
             })
             
-            # Use improved sentences for next iteration if better
-            if improved_score > current_score:
-                current_sentences = improved_sentences
-                print(f"Iteration {i+1}: Score improved from {current_score:.4f} to {improved_score:.4f}")
+            # Check if this iteration produced the best result so far
+            if iteration_score > best_score:
+                best_sentences = iteration_sentences
+                best_score = iteration_score
+                best_suggestions = suggestions
+                print(f"Iteration {i+1}: New best score! {best_score:.4f} (improvement: {iteration_score - original_score:+.4f})")
             else:
-                print(f"Iteration {i+1}: No improvement (score: {improved_score:.4f})")
+                print(f"Iteration {i+1}: Score {iteration_score:.4f} (improvement: {iteration_score - original_score:+.4f}) - not better than current best {best_score:.4f}")
         
-        results['final_sentences'] = current_sentences
-        results['final_score'] = await self.predict_visibility_tmp(current_sentences, dimension, domain, brand_name)
+        # Set final results to the best iteration
+        results['final_sentences'] = best_sentences
+        results['final_score'] = best_score
+        results['final_suggestions'] = best_suggestions
+        
+        print(f"Optimization complete: Best score {best_score:.4f} vs original {original_score:.4f} (total improvement: {best_score - original_score:+.4f})")
         
         return results
     
@@ -485,11 +649,13 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
                     
                     modified_sentences = optimization_results['final_sentences']
                     modified_score = optimization_results['final_score']
+                    final_suggestions = optimization_results['final_suggestions']
                     
-                    # Update domain data with new scores and modified sentences
+                    # Update domain data with new scores, modified sentences, and suggestions
                     domain_data['visibility'] = original_score
                     domain_data['modifiedSentences'] = modified_sentences
                     domain_data['modifiedVisibility'] = modified_score
+                    domain_data['modificationSuggestions'] = final_suggestions
                     
                     results['total_optimized'] += 1
                     dimension_results['optimized'] += 1
@@ -638,10 +804,14 @@ async def main():
             print(f"📊 Predicted Visibility Score: {score:.4f}")
         
         elif args.task == 'generate':
-            # Generate improved sentences
-            improved = inference.generate_improved_sentences(
-                args.sentences, args.dimension, args.domain
+            # Generate improved sentences and suggestions
+            generation_results = inference.generate_improved_sentences(
+                args.sentences, args.dimension, args.domain, args.brand_name
             )
+            improved = generation_results['modified_sentences']
+            suggestions = generation_results['suggestions']
+            
+            print(f"💡 Modification Suggestions: {suggestions}")
             print(f"✨ Improved Sentences: {improved}")
             
             # Also show scores using OpenRouter API
@@ -658,15 +828,16 @@ async def main():
             )
             
             print(f"🚀 Optimization Results:")
-            print(f"   Original Score: {results['iterations'][0]['score']:.4f}")
+            print(f"   Original Score: {results['original_score']:.4f}")
             print(f"   Final Score: {results['final_score']:.4f}")
-            print(f"   Total Improvement: {results['final_score'] - results['iterations'][0]['score']:.4f}")
+            print(f"   Total Improvement: {results['final_score'] - results['original_score']:.4f}")
             print(f"\n📝 Final Sentences: {results['final_sentences']}")
+            print(f"\n💡 Final Suggestions: {results['final_suggestions']}")
             
             # Show iteration details
             print(f"\n🔄 Iteration Details:")
             for iteration in results['iterations']:
-                print(f"   Iteration {iteration['iteration']}: {iteration['score']:.4f} → {iteration['improved_score']:.4f} ({iteration['improvement']:+.4f})")
+                print(f"   Iteration {iteration['iteration']}: {iteration['generated_score']:.4f} (improvement: {iteration['improvement']:+.4f})")
         
         elif args.task == 'optimize_all':
             # Optimize entire brand and update MongoDB

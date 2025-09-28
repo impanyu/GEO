@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useSession } from 'next-auth/react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Search, Globe, Calendar, BarChart3, Download, Eye, EyeOff, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
+import { Search, Globe, Calendar, BarChart3, Download, Eye, EyeOff, ChevronDown, ChevronRight, RefreshCw, Wand2, Lightbulb, Sparkles } from 'lucide-react'
 import { useNavigation } from '@/contexts/NavigationContext'
 import SideNavigation from '@/components/SideNavigation'
 import LoadingSpinner from '@/components/LoadingSpinner'
@@ -11,8 +11,11 @@ import LoadingSpinner from '@/components/LoadingSpinner'
 // Type definitions
 interface ContentSnippets {
   [normalizedDomain: string]: {
-    sentences: string[] // list of sentences
+    sentences: string[] // list of original sentences
     visibility: number  // floating number, default 0
+    modifiedSentences?: string[] // list of modified sentences (for training)
+    modifiedVisibility?: number  // floating number, default 0 (for modified sentences)
+    modificationSuggestions?: string // modification suggestions from policy model
   } | string[] // Backward compatibility: old format was just string[]
 }
 
@@ -77,6 +80,9 @@ export default function FullWebContentPage() {
   const [expandedWebsites, setExpandedWebsites] = useState<{ [website: string]: boolean }>({})
   const [expandedDimensions, setExpandedDimensions] = useState<{ [key: string]: boolean }>({})
   const [selectedBrandUrl, setSelectedBrandUrl] = useState<string>('')
+  const [showModifications, setShowModifications] = useState<{ [key: string]: boolean }>({})
+  const [loadingModifications, setLoadingModifications] = useState<{ [key: string]: boolean }>({})
+  const [modificationData, setModificationData] = useState<{ [key: string]: { suggestions: string, modifiedSentences: string[] } }>({})
 
   // Handle authentication loading
   if (status === 'loading') {
@@ -203,6 +209,97 @@ export default function FullWebContentPage() {
       ...prev,
       [websiteDimensionKey]: !prev[websiteDimensionKey]
     }))
+  }
+
+  const generateModifications = async (sentences: string[], dimension: string, domain: string, brandName: string) => {
+    const key = `${dimension}-${domain}`
+    
+    // Check if we already have the data stored in the database
+    if (analysis?.websiteContent[dimension]?.[domain] && !Array.isArray(analysis.websiteContent[dimension][domain])) {
+      const domainData = analysis.websiteContent[dimension][domain] as any
+      if (domainData.modificationSuggestions && domainData.modifiedSentences) {
+        setModificationData(prev => ({
+          ...prev,
+          [key]: {
+            suggestions: domainData.modificationSuggestions,
+            modifiedSentences: domainData.modifiedSentences
+          }
+        }))
+        setShowModifications(prev => ({ ...prev, [key]: true }))
+        return
+      }
+    }
+    
+    setLoadingModifications(prev => ({ ...prev, [key]: true }))
+    
+    try {
+      // Call the inference API to generate modifications
+      const response = await fetch('/api/inference', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          task: 'generate',
+          sentences: sentences,
+          dimension: dimension,
+          domain: domain,
+          brand_name: brandName
+        })
+      })
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+      
+      const data = await response.json()
+      
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to generate modifications')
+      }
+      
+      // Store the modification data
+      setModificationData(prev => ({
+        ...prev,
+        [key]: {
+          suggestions: data.suggestions || 'No suggestions generated',
+          modifiedSentences: data.modifiedSentences || sentences
+        }
+      }))
+      
+      // Show the modifications
+      setShowModifications(prev => ({ ...prev, [key]: true }))
+      
+    } catch (error) {
+      console.error('Error generating modifications:', error)
+      // Show error state but still allow toggling
+      setModificationData(prev => ({
+        ...prev,
+        [key]: {
+          suggestions: `Error generating suggestions: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          modifiedSentences: sentences
+        }
+      }))
+      setShowModifications(prev => ({ ...prev, [key]: true }))
+    } finally {
+      setLoadingModifications(prev => ({ ...prev, [key]: false }))
+    }
+  }
+
+  const toggleModifications = (dimension: string, domain: string, sentences: string[], brandName: string) => {
+    const key = `${dimension}-${domain}`
+    
+    if (showModifications[key]) {
+      // Hide modifications
+      setShowModifications(prev => ({ ...prev, [key]: false }))
+    } else {
+      // Show modifications - generate if not already available
+      if (!modificationData[key]) {
+        generateModifications(sentences, dimension, domain, brandName)
+      } else {
+        setShowModifications(prev => ({ ...prev, [key]: true }))
+      }
+    }
   }
 
   const downloadData = () => {
@@ -502,58 +599,158 @@ export default function FullWebContentPage() {
                             const isOldFormat = Array.isArray(domainData)
                             const sentences = isOldFormat ? domainData : domainData.sentences
                             const visibility = isOldFormat ? 0 : domainData.visibility
+                            const modifiedSentences = isOldFormat ? [] : (domainData.modifiedSentences || [])
+                            const modifiedVisibility = isOldFormat ? 0 : (domainData.modifiedVisibility || 0)
+                            const modificationSuggestions = isOldFormat ? '' : (domainData.modificationSuggestions || '')
+                            
+                            const modificationKey = `${dimension}-${domain}`
+                            const isModificationLoading = loadingModifications[modificationKey]
+                            const isModificationVisible = showModifications[modificationKey]
+                            const hasStoredModifications = modificationSuggestions && modifiedSentences.length > 0
+                            const currentModificationData = modificationData[modificationKey]
                             
                             return (
                               <div key={domain} className="border border-gray-200 rounded-lg overflow-hidden">
                                 {/* Domain Header */}
-                                <div 
-                                  className="p-4 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors duration-200"
-                                  onClick={() => toggleDimension(domainDimensionKey)}
-                                >
+                                <div className="p-4 bg-gray-50">
                                   <div className="flex items-center justify-between">
-                                    <div className="flex items-center space-x-3">
+                                    <div 
+                                      className="flex items-center space-x-3 cursor-pointer hover:bg-gray-100 rounded-lg p-2 -m-2 transition-colors duration-200 flex-1"
+                                      onClick={() => toggleDimension(domainDimensionKey)}
+                                    >
                                       <div className="p-2 bg-blue-100 rounded-lg">
                                         <Globe className="w-4 h-4 text-blue-600" />
                                       </div>
-                                      <div>
+                                      <div className="flex-1">
                                         <h4 className="font-semibold text-gray-900">{domain}</h4>
                                         <p className="text-xs text-gray-500 mt-1">
                                           {sentences.length} sentences{!isOldFormat && ` • Visibility: ${(visibility * 100).toFixed(1)}%`}
                                           {isOldFormat && ' • Legacy format (no visibility data)'}
+                                          {hasStoredModifications && ` • Has modifications`}
                                         </p>
                                       </div>
+                                      {isDomainExpanded ? (
+                                        <ChevronDown className="w-4 h-4 text-gray-400" />
+                                      ) : (
+                                        <ChevronRight className="w-4 h-4 text-gray-400" />
+                                      )}
                                     </div>
-                                    {isDomainExpanded ? (
-                                      <ChevronDown className="w-4 h-4 text-gray-400" />
-                                    ) : (
-                                      <ChevronRight className="w-4 h-4 text-gray-400" />
+                                    
+                                    {/* Modification Button */}
+                                    {sentences.length > 0 && (
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          toggleModifications(dimension, domain, sentences, analysis?.brandName || 'Unknown Brand')
+                                        }}
+                                        disabled={isModificationLoading}
+                                        className={`ml-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 flex items-center space-x-2 ${
+                                          isModificationVisible
+                                            ? 'bg-purple-100 text-purple-700 hover:bg-purple-200'
+                                            : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                                        } disabled:opacity-50 disabled:cursor-not-allowed`}
+                                      >
+                                        {isModificationLoading ? (
+                                          <>
+                                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current"></div>
+                                            <span>Generating...</span>
+                                          </>
+                                        ) : isModificationVisible ? (
+                                          <>
+                                            <EyeOff className="w-4 h-4" />
+                                            <span>Hide Modifications</span>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Wand2 className="w-4 h-4" />
+                                            <span>Show Modifications</span>
+                                          </>
+                                        )}
+                                      </button>
                                     )}
                                   </div>
                                 </div>
 
                                 {/* Sentences Content */}
                                 {isDomainExpanded && (
-                                  <div className="p-4">
-                                    <div className="space-y-2">
-                                      {sentences.map((sentence, index) => (
-                                        <div key={index} className="p-3 bg-gray-50 rounded-lg">
-                                          <p className="text-sm text-gray-900">{sentence}</p>
-                                        </div>
-                                      ))}
-                                      {sentences.length === 0 && !isOldFormat && visibility > 0 && (
-                                        <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200">
-                                          <p className="text-sm text-yellow-700">
-                                            No sentences from web content, but has visibility: {(visibility * 100).toFixed(1)}% 
-                                            (calculated from agent recommendation data)
-                                          </p>
-                                        </div>
-                                      )}
-                                      {sentences.length === 0 && (isOldFormat || visibility === 0) && (
-                                        <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
-                                          <p className="text-sm text-gray-700">No sentences found for this domain</p>
-                                        </div>
-                                      )}
+                                  <div className="p-4 space-y-4">
+                                    {/* Original Sentences Panel */}
+                                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                                      <div className="flex items-center space-x-2 mb-3">
+                                        <Globe className="w-4 h-4 text-blue-600" />
+                                        <h5 className="font-semibold text-blue-900">Original Sentences</h5>
+                                        {!isOldFormat && (
+                                          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">
+                                            Visibility: {(visibility * 100).toFixed(1)}%
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="space-y-2">
+                                        {sentences.map((sentence, index) => (
+                                          <div key={index} className="p-3 bg-white rounded-lg border border-blue-100">
+                                            <p className="text-sm text-gray-900">{sentence}</p>
+                                          </div>
+                                        ))}
+                                        {sentences.length === 0 && !isOldFormat && visibility > 0 && (
+                                          <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200">
+                                            <p className="text-sm text-yellow-700">
+                                              No sentences from web content, but has visibility: {(visibility * 100).toFixed(1)}% 
+                                              (calculated from agent recommendation data)
+                                            </p>
+                                          </div>
+                                        )}
+                                        {sentences.length === 0 && (isOldFormat || visibility === 0) && (
+                                          <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+                                            <p className="text-sm text-gray-700">No sentences found for this domain</p>
+                                          </div>
+                                        )}
+                                      </div>
                                     </div>
+
+                                    {/* Modification Suggestions and Modified Sentences */}
+                                    {isModificationVisible && (
+                                      <>
+                                        {/* Modification Suggestions Panel */}
+                                        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                                          <div className="flex items-center space-x-2 mb-3">
+                                            <Lightbulb className="w-4 h-4 text-yellow-600" />
+                                            <h5 className="font-semibold text-yellow-900">Modification Suggestions</h5>
+                                          </div>
+                                          <div className="p-3 bg-white rounded-lg border border-yellow-100">
+                                            <p className="text-sm text-gray-900">
+                                              {hasStoredModifications 
+                                                ? modificationSuggestions 
+                                                : currentModificationData?.suggestions || 'Loading suggestions...'}
+                                            </p>
+                                          </div>
+                                        </div>
+
+                                        {/* Modified Sentences Panel */}
+                                        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                                          <div className="flex items-center space-x-2 mb-3">
+                                            <Sparkles className="w-4 h-4 text-green-600" />
+                                            <h5 className="font-semibold text-green-900">Modified Sentences</h5>
+                                            {!isOldFormat && modifiedVisibility > 0 && (
+                                              <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
+                                                Visibility: {(modifiedVisibility * 100).toFixed(1)}%
+                                              </span>
+                                            )}
+                                          </div>
+                                          <div className="space-y-2">
+                                            {(hasStoredModifications ? modifiedSentences : currentModificationData?.modifiedSentences || []).map((sentence, index) => (
+                                              <div key={index} className="p-3 bg-white rounded-lg border border-green-100">
+                                                <p className="text-sm text-gray-900">{sentence}</p>
+                                              </div>
+                                            ))}
+                                            {(!hasStoredModifications && (!currentModificationData?.modifiedSentences || currentModificationData.modifiedSentences.length === 0)) && (
+                                              <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+                                                <p className="text-sm text-gray-700">No modified sentences generated</p>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </>
+                                    )}
                                   </div>
                                 )}
                               </div>

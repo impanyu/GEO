@@ -33,6 +33,7 @@ export interface ContentSnippets {
     visibility: number  // floating number, default 0
     modifiedSentences: string[] // list of modified sentences (for training)
     modifiedVisibility: number  // floating number, default 0 (for modified sentences)
+    modificationSuggestions: string // modification suggestions from policy model
   }
 }
 

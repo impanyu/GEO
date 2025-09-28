@@ -192,7 +192,7 @@ class GRPOConfig:
     model_name: str = "meta-llama/Llama-3.1-8B"  # Default to Llama 3.1 8B
     reward_model_path: str = "./reward_model_output/reward_model_epoch_10.pt"
     max_length: int = 512
-    max_new_tokens: int = 256
+    max_new_tokens: int = 512
     batch_size: int = 2  # Smaller default for large models
     learning_rate: float = 1e-6  # Lower learning rate for large models
     num_epochs: int = 5
@@ -1186,10 +1186,10 @@ MODIFICATION SUGGESTIONS:
 {suggestions}
 
 TASK:
-Apply the modification suggestions to improve the original sentences for better brand visibility. Create modified sentences that:
+Apply the modification suggestions to get a new list of sentences. Create modified sentences that:
 1. Follow the suggestions provided
 2. Maintain the same meaning as the original sentences
-3. Are in the same order as the original sentences
+3. For existing sentences, the modified sentence should be in the same order as the original sentences
 4. Newly added sentences should be added to the end of the modified original sentences
 5. Are returned as a JSON array of strings
 
