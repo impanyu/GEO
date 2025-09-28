@@ -149,14 +149,11 @@ class ModelInference:
             return prediction.item()
     
     async def predict_visibility_tmp(self, sentences: list, dimension: str, domain: str, brand_name: str = "Unknown Brand") -> float:
-        """Predict visibility score using OpenRouter GPT-4o API (same as policy model)"""
+        """Predict visibility score using two-component system: quality assessment + length measurement"""
         try:
             # Skip empty sentence lists
             if not sentences or len(sentences) == 0:
                 return 0.0
-            
-            # Format sentences for evaluation
-            sentences_text = '\n'.join([f"- {sentence}" for sentence in sentences])
             
             # Large site list (same as policy model)
             LARGE_SITE_LIST = [
@@ -173,43 +170,132 @@ class ModelInference:
                 'g2.com'
             ]
             
-            # Create evaluation prompt (same as policy model)
+            # COMPONENT 1: Quality assessment using GPT-4o
+            quality_score = await self._assess_content_quality_with_gpt4o(
+                sentences, brand_name, dimension, domain
+            )
+            
+            # COMPONENT 2: Length-based measurement
+            length_score = self._calculate_length_score(sentences)
+            
+            # Combine components: 0.25 * quality + 0.3 * length
+            base_visibility_score = 0.25 * quality_score + 0.3 * length_score
+            
+            # Domain bonus: multiply by 1.1 if domain is in large site list
+            normalized_domain = domain.lower()
+            if any(large_site in normalized_domain for large_site in LARGE_SITE_LIST):
+                final_score = base_visibility_score * 1.1
+                print(f"Domain bonus applied: {domain} is in large site list (score: {base_visibility_score:.4f} → {final_score:.4f})")
+            else:
+                final_score = base_visibility_score
+            
+            # Ensure score stays within 0-1 range
+            final_score = min(1.0, max(0.0, final_score))
+            
+            print(f"Visibility score breakdown - Quality: {quality_score:.4f}, Length: {length_score:.4f}, Final: {final_score:.4f}")
+            return final_score
+            
+        except Exception as e:
+            print(f"Error calculating visibility score: {e}")
+            return 0.0
+    
+    async def _assess_content_quality_with_gpt4o(
+        self,
+        sentences: list,
+        brand_name: str,
+        dimension: str,
+        domain: str
+    ) -> float:
+        """
+        Component 1: Assess content quality using GPT-4o based on:
+        - Quality and usefulness of sentences
+        - Relevance to brand and dimension  
+        - Clarity and readability
+        - Credibility and trustworthiness
+        - Specificity vs vague generalities
+        """
+        try:
+            # Format sentences for evaluation as JSON list
+            import json
+            sentences_text = json.dumps(sentences, indent=2)
+            
+            # Create quality assessment prompt
             prompt = f"""
-You are an AI content visibility evaluator. Your task is to assess the probability of content sentences being quoted or referenced by AI agents like ChatGPT when answering user questions about this brand or topic.
+You are an AI content quality evaluator. Your task is to assess the quality of content sentences for brand visibility.
 
 CONTEXT:
 - Brand: {brand_name}
 - Content Dimension: {dimension}
 - Source Domain: {domain}
-- Large Site List: {LARGE_SITE_LIST}
 
-CONTENT TO EVALUATE:
+CONTENT SENTENCES TO EVALUATE:
 {sentences_text}
 
 EVALUATION TASK:
-Rate the probability (0.0 to 1.0) that these sentences would be quoted or referenced by AI agents like ChatGPT when answering user questions about this brand or topic.
+Rate the quality (0.0 to 1.0) of these sentences based on the following criteria:
 
-SCORING CRITERIA:
-1. If the sentences are more useful to introduce the brand and dimension, the probability of being quoted is higher.
-2. If the sentences are more clear and readable, the probability of being quoted is higher.
-4. If the sentences list is empty, the probability of being quoted is 0.0. 
-5. If the sentences list is longer and each sentence is in more details, the probability of being quoted is higher.
-5. The domain on which the sentences are posted is also important, if the domain is in the Large Site List, the probability of being quoted is higher.
-6. The content dimension also affects the probability of being quoted, if the content dimension tend to be asked more often, the probability of being quoted is higher.
+QUALITY CRITERIA:
+1. The quality and usefulness of the sentences
+2. The relevance to the brand and dimension
+3. The clarity and readability of the sentences
+4. The credibility and trustworthiness of the sentences
+5. The specificity vs vague generalities of the sentences
 
+SCORING GUIDELINES:
+- 0.9-1.0: Exceptional quality, highly relevant, very specific and credible
+- 0.7-0.8: Good quality, relevant, clear and trustworthy
+- 0.5-0.6: Average quality, somewhat relevant, moderately clear
+- 0.3-0.4: Below average quality, limited relevance, vague
+- 0.0-0.2: Poor quality, irrelevant, unclear or untrustworthy
 
-PAY ATTENTION: Be conservative in your scoring, unless you are very sure, do not give very high score. Normally the score should be between 0 - 0.5.
+PAY ATTENTION: Be conservative in your scoring. Focus purely on content quality, not length.
 
-
-Return ONLY a single floating point number between 0.0 and 1.0 representing the probability score.
+Return ONLY a single floating point number between 0.0 and 1.0 representing the quality score.
 """
 
             # Call OpenRouter GPT-4o API
-            visibility_score = await self._call_openrouter_for_reward(prompt)
-            return visibility_score
+            quality_score = await self._call_openrouter_for_reward(prompt)
+            return quality_score
             
         except Exception as e:
-            print(f"Error calculating visibility score: {e}")
+            print(f"Error assessing content quality: {e}")
+            return 0.0
+    
+    def _calculate_length_score(self, sentences: list) -> float:
+        """
+        Component 2: Calculate length-based score considering:
+        - Average sentence length (in words)
+        - Number of sentences in the list
+        Returns a score between 0.0 and 1.0 where longer is better
+        """
+        try:
+            if not sentences or len(sentences) == 0:
+                return 0.0
+            
+            # Calculate average sentence length in words
+            total_words = sum(len(sentence.split()) for sentence in sentences)
+            avg_sentence_length = total_words / len(sentences)
+            
+            # Calculate sentence count
+            sentence_count = len(sentences)
+            
+            # Normalize average sentence length (assume 50 words is very good, 10 is minimum)
+            # Using sigmoid-like scaling: score increases with length but plateaus
+            length_component = min(1.0, max(0.0, (avg_sentence_length - 5) / 45))  # 5-50 word range
+            
+            # Normalize sentence count (assume 20 sentences is very good, 1 is minimum)
+            # Using log scaling to avoid linear explosion
+            import math
+            count_component = min(1.0, max(0.0, math.log(sentence_count + 1) / math.log(21)))  # log scale 1-20 range
+            
+            # Combine both factors: 60% average length, 40% sentence count
+            length_score = 0.6 * length_component + 0.4 * count_component
+            
+            print(f"Length analysis - Avg words/sentence: {avg_sentence_length:.1f}, Count: {sentence_count}, Score: {length_score:.4f}")
+            return length_score
+            
+        except Exception as e:
+            print(f"Error calculating length score: {e}")
             return 0.0
     
     async def _call_openrouter_for_reward(self, prompt: str) -> float:
