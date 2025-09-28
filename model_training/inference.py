@@ -627,8 +627,10 @@ Sentences: {sentences_json}
 Your suggestion include keywords to add/remove, style to adopt, sentence structure to adopt, content/topics to add/remove, etc.
 When your suggestion is only applied to one sentence, you need to specify which sentence to modify, or your suggestion is considered general for all sentences.
 When suggesting new content, you do not need to write specific content, you can point out which aspect/topics of the content to improve.
-When sentence list is empty, you can suggest new content/aspects/topics to add based on the brand {brand_name} and {dimension}.
 All the suggested new content/topics/aspects should still be related to the brand {brand_name} and {dimension}.
+When sentence list is empty, you can suggest new content/aspects/topics to add based on the brand {brand_name} and {dimension}.
+
+
 Output the modification suggestions as a paragraph after semicolon:"""
         
         # Tokenize
