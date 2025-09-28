@@ -754,7 +754,8 @@ Output the modification suggestions as a paragraph after semicolon:"""
                         'modified_score': None,
                         'improvement': None,
                         'final_suggestions': None,
-                        'error': 'No sentences to optimize'
+                        'error': 'No sentences to optimize',
+                        'mongodb_updated': False
                     }
                     dimension_results['details'].append(domain_detail)
                     continue
@@ -782,6 +783,25 @@ Output the modification suggestions as a paragraph after semicolon:"""
                     domain_data['modifiedVisibility'] = modified_score
                     domain_data['modificationSuggestions'] = final_suggestions
                     
+                    # Update MongoDB immediately for this domain
+                    try:
+                        domain_update_result = collection.update_one(
+                            {'normalizedBrandUrl': normalized_brand_url},
+                            {
+                                '$set': {
+                                    f'websiteContent.{dimension}.{domain}': domain_data,
+                                    'sampledTime': datetime.datetime.utcnow()
+                                }
+                            }
+                        )
+                        
+                        mongodb_success = domain_update_result.modified_count > 0
+                        print(f"    💾 MongoDB update: {'✅ success' if mongodb_success else '⚠️ no changes'}")
+                        
+                    except Exception as mongo_error:
+                        print(f"    💾 MongoDB update: ❌ failed - {mongo_error}")
+                        mongodb_success = False
+                    
                     results['total_optimized'] += 1
                     dimension_results['optimized'] += 1
                     
@@ -800,7 +820,8 @@ Output the modification suggestions as a paragraph after semicolon:"""
                         'modified_score': modified_score,
                         'improvement': improvement,
                         'final_suggestions': final_suggestions,
-                        'error': None
+                        'error': None,
+                        'mongodb_updated': mongodb_success
                     }
                     dimension_results['details'].append(domain_detail)
                     
@@ -820,7 +841,8 @@ Output the modification suggestions as a paragraph after semicolon:"""
                         'modified_score': None,
                         'improvement': None,
                         'final_suggestions': None,
-                        'error': error_msg
+                        'error': error_msg,
+                        'mongodb_updated': False
                     }
                     dimension_results['details'].append(domain_detail)
                     continue
@@ -828,46 +850,27 @@ Output the modification suggestions as a paragraph after semicolon:"""
             results['dimensions'][dimension] = dimension_results
             print(f"  📊 Dimension {dimension}: {dimension_results['optimized']}/{dimension_results['domains']} optimized, {dimension_results['improved']} improved")
         
-        # Update MongoDB document
-        mongodb_update_result = {
-            'status': 'unknown',
-            'modified_count': 0,
-            'matched_count': 0,
-            'error': None
-        }
+        # Calculate MongoDB update statistics from domain-level updates
+        successful_updates = sum(len([d for d in dim_data['details'] if d.get('mongodb_updated', False)]) 
+                                for dim_data in results['dimensions'].values())
+        failed_updates = sum(len([d for d in dim_data['details'] 
+                                 if d['status'] == 'success' and not d.get('mongodb_updated', False)]) 
+                            for dim_data in results['dimensions'].values())
         
-        try:
-            update_result = collection.update_one(
-                {'normalizedBrandUrl': normalized_brand_url},
-                {
-                    '$set': {
-                        'websiteContent': website_content,
-                        'sampledTime': datetime.datetime.utcnow()
-                    }
-                }
-            )
-            
-            mongodb_update_result['modified_count'] = update_result.modified_count
-            mongodb_update_result['matched_count'] = update_result.matched_count
-            
-            if update_result.modified_count > 0:
-                mongodb_update_result['status'] = 'success'
-                print(f"\n✅ Successfully updated MongoDB document for {brand_name}")
-                print(f"   📊 Modified: {update_result.modified_count}, Matched: {update_result.matched_count}")
-            else:
-                mongodb_update_result['status'] = 'no_changes'
-                print(f"\n⚠️ No changes made to MongoDB document for {brand_name}")
-                print(f"   📊 Matched: {update_result.matched_count}")
-                
-        except Exception as e:
-            error_msg = str(e)
-            mongodb_update_result['status'] = 'failed'
-            mongodb_update_result['error'] = error_msg
-            print(f"\n❌ Error updating MongoDB: {error_msg}")
-            raise
+        mongodb_update_result = {
+            'strategy': 'per_domain_updates',
+            'successful_domain_updates': successful_updates,
+            'failed_domain_updates': failed_updates,
+            'total_attempted_updates': successful_updates + failed_updates
+        }
         
         # Add MongoDB update result to the final results
         results['mongodb_update'] = mongodb_update_result
+        
+        print(f"\n💾 MongoDB Update Summary:")
+        print(f"   ✅ Successful domain updates: {successful_updates}")
+        print(f"   ❌ Failed domain updates: {failed_updates}")
+        print(f"   📊 Total update attempts: {mongodb_update_result['total_attempted_updates']}")
         
         # Calculate detailed statistics
         total_skipped = sum(len([d for d in dim_data['details'] if d['status'] == 'skipped']) 
@@ -1034,15 +1037,19 @@ async def main():
             results = await inference.optimize_all_brand(args.brand_url, args.iterations)
             
             # The function already prints detailed results, just add a final status
-            mongodb_status = results.get('mongodb_update', {}).get('status', 'unknown')
-            if mongodb_status == 'success':
-                print(f"\n✅ MongoDB FullWebContentCache updated successfully!")
-            elif mongodb_status == 'no_changes':
-                print(f"\n⚠️ MongoDB FullWebContentCache update completed (no changes needed)")
-            elif mongodb_status == 'failed':
-                print(f"\n❌ MongoDB FullWebContentCache update failed!")
+            mongodb_info = results.get('mongodb_update', {})
+            successful_updates = mongodb_info.get('successful_domain_updates', 0)
+            failed_updates = mongodb_info.get('failed_domain_updates', 0)
+            total_attempts = mongodb_info.get('total_attempted_updates', 0)
+            
+            if total_attempts == 0:
+                print(f"\n⚠️ No MongoDB updates were attempted")
+            elif failed_updates == 0:
+                print(f"\n✅ All MongoDB domain updates successful! ({successful_updates}/{total_attempts})")
+            elif successful_updates == 0:
+                print(f"\n❌ All MongoDB domain updates failed! ({failed_updates}/{total_attempts})")
             else:
-                print(f"\n❓ MongoDB FullWebContentCache update status: {mongodb_status}")
+                print(f"\n⚠️ Mixed MongoDB update results: {successful_updates} success, {failed_updates} failed")
             
             # Show final JSON output for programmatic access
             print(f"\n📋 Results JSON available in returned object for programmatic access")
