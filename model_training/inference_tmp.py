@@ -10,13 +10,20 @@ import datetime
 import json
 import os
 import sys
+import torch
 from typing import Dict, List
 
 # Add the current directory to Python path to import modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from inference import ModelInference, normalize_url, get_mongodb_connection
+from policy_model import GRPOConfig, GRPOModel, GRPOTrainer
+from reward_model import RewardModel
 from dotenv import load_dotenv
+
+# Make classes available at module level for pickle loading
+import policy_model
+import reward_model
 
 # Load environment variables
 load_dotenv('../.env.local')
@@ -46,10 +53,18 @@ async def optimize_targeted_domains(brand_url: str, iterations: int = 3) -> Dict
     print(f"📋 Target domains: {', '.join(TARGET_DOMAINS)}")
     print(f"📏 Target dimension: {TARGET_DIMENSION}")
     
-    # Initialize inference with models
+    # Initialize inference with models (use absolute paths to avoid import issues)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    reward_model_path = os.path.join(current_dir, 'reward_model_output', 'reward_model_epoch_10.pt')
+    policy_model_path = os.path.join(current_dir, 'grpo_model_output', 'grpo_model_epoch_2.pt')
+    
+    # Check if model files exist
+    if not os.path.exists(policy_model_path):
+        raise ValueError(f"Policy model not found at: {policy_model_path}")
+    
     inference = ModelInference(
-        reward_model_path='./reward_model_output/reward_model_epoch_10.pt',
-        policy_model_path='./grpo_model_output/grpo_model_epoch_2.pt'
+        reward_model_path=reward_model_path if os.path.exists(reward_model_path) else None,
+        policy_model_path=policy_model_path
     )
     
     if inference.policy_model is None:
