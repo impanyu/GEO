@@ -605,8 +605,7 @@ export default function FullWebContentPage() {
                                         {sentences.length} content items
                                       </span>
                                       
-                                      {sentences.length > 0 ? (
-                                        <button
+                                      <button
                                         onClick={(e) => {
                                           e.stopPropagation()
                                           console.log('Button clicked for:', dimension, domain, sentences.length, 'content items')
@@ -630,11 +629,6 @@ export default function FullWebContentPage() {
                                             </>
                                           )}
                                         </button>
-                                      ) : (
-                                        <span className="px-4 py-2 text-xs text-gray-400 bg-gray-100 rounded-lg">
-                                          No content to modify
-                                        </span>
-                                      )}
                                     </div>
                                   </div>
                                 </div>
