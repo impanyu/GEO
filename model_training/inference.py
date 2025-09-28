@@ -667,13 +667,13 @@ Output the modification suggestions as a paragraph after semicolon:"""
             suggestions = await self._clean_suggestions_with_gpt4o(
                 generated_text, sentences, brand_name, dimension, domain
             )
-            print(f"Suggestions: {suggestions}")
+            #print(f"Suggestions: {suggestions}")
             
             # Apply suggestions using GPT-4o to get modified sentences (same as policy model)
             modified_sentences = await self._extract_and_apply_suggestions_with_gpt4o(
                 suggestions, sentences, brand_name, dimension, domain
             )
-            print(f"Modified sentences: {modified_sentences}")
+            #print(f"Modified sentences: {modified_sentences}")
             
             return {
                 'suggestions': suggestions,
