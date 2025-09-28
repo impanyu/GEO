@@ -523,6 +523,8 @@ Apply the modification suggestions to get a new list of sentences. Create modifi
 4. Newly added sentences should be added to the end of the modified original sentences
 5. Are returned as a JSON array of strings
 
+PAY ATTENTION: When sentence list is empty, you can add new content/aspects/topics to add based on the suggestions provided.
+
 GUIDELINES:
 - If suggestions mention specific sentences, apply changes only to those sentences
 - If suggestions are general, apply them to all sentences appropriately
