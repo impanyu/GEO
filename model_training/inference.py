@@ -659,17 +659,19 @@ Output the modification suggestions as a paragraph after semicolon:"""
             # Decode only the generated part
             input_length = encoding['input_ids'].shape[1]
             generated_text = self.policy_tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
-            print(f"Generated text: {generated_text}")
+            
             
             # Clean up the raw generated text using GPT-4o to get well-formed suggestions
             suggestions = await self._clean_suggestions_with_gpt4o(
                 generated_text, sentences, brand_name, dimension, domain
             )
+            print(f"Suggestions: {suggestions}")
             
             # Apply suggestions using GPT-4o to get modified sentences (same as policy model)
             modified_sentences = await self._extract_and_apply_suggestions_with_gpt4o(
                 suggestions, sentences, brand_name, dimension, domain
             )
+            print(f"Modified sentences: {modified_sentences}")
             
             return {
                 'suggestions': suggestions,
