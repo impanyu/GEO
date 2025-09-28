@@ -864,17 +864,33 @@ Output the modification suggestions as a paragraph after semicolon:"""
                     
                     # Update MongoDB immediately for this domain
                     try:
-                        domain_update_result = collection.update_one(
-                            {'normalizedBrandUrl': normalized_brand_url},
-                            {
-                                '$set': {
-                                    f'websiteContent.{dimension}.{domain}': domain_data,
-                                    'sampledTime': datetime.datetime.utcnow()
-                                }
-                            }
-                        )
+                        # First, get the current document to modify it properly
+                        current_doc = collection.find_one({'normalizedBrandUrl': normalized_brand_url})
+                        if current_doc:
+                            # Update the specific domain in the in-memory document
+                            if 'websiteContent' not in current_doc:
+                                current_doc['websiteContent'] = {}
+                            if dimension not in current_doc['websiteContent']:
+                                current_doc['websiteContent'][dimension] = {}
+                            
+                            # Set the domain data directly (this preserves dots in domain names)
+                            current_doc['websiteContent'][dimension][domain] = domain_data
+                            current_doc['sampledTime'] = datetime.datetime.utcnow()
+                            
+                            # Replace the entire document
+                            domain_update_result = collection.replace_one(
+                                {'normalizedBrandUrl': normalized_brand_url},
+                                current_doc
+                            )
+                        else:
+                            print(f"    ❌ Document not found for brand: {normalized_brand_url}")
+                            mongodb_success = False
+                            domain_update_result = None
                         
-                        mongodb_success = domain_update_result.modified_count > 0
+                        if domain_update_result:
+                            mongodb_success = domain_update_result.modified_count > 0
+                        else:
+                            mongodb_success = False
                         print(f"    💾 MongoDB update: {'✅ success' if mongodb_success else '⚠️ no changes'}")
                         
                     except Exception as mongo_error:

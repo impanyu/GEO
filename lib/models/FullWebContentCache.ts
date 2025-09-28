@@ -31,10 +31,10 @@ export interface ContentSnippets {
   [normalizedDomain: string]: {
     sentences: string[] // list of original sentences
     visibility: number  // floating number, default 0
-    modifiedSentences: string[] // list of modified sentences (for training)
-    modifiedVisibility: number  // floating number, default 0 (for modified sentences)
-    modificationSuggestions: string // modification suggestions from policy model
-  }
+    modifiedSentences?: string[] // list of modified sentences (for training)
+    modifiedVisibility?: number  // floating number, default 0 (for modified sentences)
+    modificationSuggestions?: string // modification suggestions from policy model
+  } | string[] // Backward compatibility: old format was just string[]
 }
 
 export interface WebsiteContent {

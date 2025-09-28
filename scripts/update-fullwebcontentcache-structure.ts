@@ -97,21 +97,26 @@ async function updateFullWebContentCacheStructure(): Promise<void> {
           } else {
             // Update existing entries to include new fields if they don't exist
             let entryUpdated = false
-            if (!websiteContent[dimension][normalizedLargeSite].hasOwnProperty('modifiedSentences')) {
-              websiteContent[dimension][normalizedLargeSite].modifiedSentences = []
-              entryUpdated = true
-            }
-            if (!websiteContent[dimension][normalizedLargeSite].hasOwnProperty('modifiedVisibility')) {
-              websiteContent[dimension][normalizedLargeSite].modifiedVisibility = 0
-              entryUpdated = true
-            }
-            if (!websiteContent[dimension][normalizedLargeSite].hasOwnProperty('modificationSuggestions')) {
-              websiteContent[dimension][normalizedLargeSite].modificationSuggestions = ''
-              entryUpdated = true
-            }
-            if (entryUpdated) {
-              hasChanges = true
-              console.log(`    🔄 Updated ${largeSite} in ${dimension} with new fields`)
+            const existingEntry = websiteContent[dimension][normalizedLargeSite]
+            
+            // Only update if it's not the old array format
+            if (!Array.isArray(existingEntry)) {
+              if (!existingEntry.hasOwnProperty('modifiedSentences')) {
+                (existingEntry as any).modifiedSentences = []
+                entryUpdated = true
+              }
+              if (!existingEntry.hasOwnProperty('modifiedVisibility')) {
+                (existingEntry as any).modifiedVisibility = 0
+                entryUpdated = true
+              }
+              if (!existingEntry.hasOwnProperty('modificationSuggestions')) {
+                (existingEntry as any).modificationSuggestions = ''
+                entryUpdated = true
+              }
+              if (entryUpdated) {
+                hasChanges = true
+                console.log(`    🔄 Updated ${largeSite} in ${dimension} with new fields`)
+              }
             }
           }
         })
@@ -121,22 +126,25 @@ async function updateFullWebContentCacheStructure(): Promise<void> {
           const domainData = websiteContent[dimension][existingDomain]
           let entryUpdated = false
           
-          if (!domainData.hasOwnProperty('modifiedSentences')) {
-            domainData.modifiedSentences = []
-            entryUpdated = true
-          }
-          if (!domainData.hasOwnProperty('modifiedVisibility')) {
-            domainData.modifiedVisibility = 0
-            entryUpdated = true
-          }
-          if (!domainData.hasOwnProperty('modificationSuggestions')) {
-            domainData.modificationSuggestions = ''
-            entryUpdated = true
-          }
-          
-          if (entryUpdated) {
-            hasChanges = true
-            console.log(`    🔄 Updated existing domain ${existingDomain} in ${dimension} with new fields`)
+          // Only update if it's not the old array format
+          if (!Array.isArray(domainData)) {
+            if (!domainData.hasOwnProperty('modifiedSentences')) {
+              (domainData as any).modifiedSentences = []
+              entryUpdated = true
+            }
+            if (!domainData.hasOwnProperty('modifiedVisibility')) {
+              (domainData as any).modifiedVisibility = 0
+              entryUpdated = true
+            }
+            if (!domainData.hasOwnProperty('modificationSuggestions')) {
+              (domainData as any).modificationSuggestions = ''
+              entryUpdated = true
+            }
+            
+            if (entryUpdated) {
+              hasChanges = true
+              console.log(`    🔄 Updated existing domain ${existingDomain} in ${dimension} with new fields`)
+            }
           }
         })
       })
@@ -156,8 +164,14 @@ async function updateFullWebContentCacheStructure(): Promise<void> {
             Object.values(websiteContent).flatMap(dimensionContent => Object.keys(dimensionContent))
           ).size
           const totalSentences = Object.values(websiteContent).reduce((sum, dimensionContent) => 
-            sum + Object.values(dimensionContent).reduce((dimSum, domainData) => 
-              dimSum + domainData.sentences.length, 0), 0)
+            sum + Object.values(dimensionContent).reduce((dimSum, domainData) => {
+              // Handle both old (array) and new (object) formats
+              if (Array.isArray(domainData)) {
+                return dimSum + domainData.length
+              } else {
+                return dimSum + (domainData.sentences?.length || 0)
+              }
+            }, 0), 0)
           
           console.log(`    📊 Structure: ${CONTENT_DIMENSIONS.length} dimensions, ${totalDomains} domains, ${totalSentences} sentences`)
         } else {

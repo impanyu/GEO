@@ -347,3 +347,4 @@ credentials.json
 
 # MongoDB backups (may contain sensitive data)
 mongodb_backup/
+mongodb_backup.tar.gz
