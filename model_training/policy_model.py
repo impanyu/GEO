@@ -1021,13 +1021,13 @@ class GRPOTrainer:
                 # COMPONENT 2: Length-based measurement
                 length_score = self._calculate_length_score(sentences)
                 
-                # Combine components: 0.25 * quality + 0.3 * length
-                base_visibility_score = 0.25 * quality_score + 0.3 * length_score
+                # Combine components: 0.2 * quality + 0.3 * length
+                base_visibility_score = 0.2 * quality_score + 0.3 * length_score
                 
-                # Domain bonus: multiply by 1.1 if domain is in large site list
+                # Domain bonus: multiply by 1.2 if domain is in large site list
                 normalized_domain = domain.lower()
                 if any(large_site in normalized_domain for large_site in LARGE_SITE_LIST):
-                    final_score = base_visibility_score * 1.1
+                    final_score = base_visibility_score * 1.2
                     logger.debug(f"Domain bonus applied: {domain} is in large site list (score: {base_visibility_score:.4f} → {final_score:.4f})")
                 else:
                     final_score = base_visibility_score
@@ -1191,17 +1191,17 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
             # Calculate sentence count
             sentence_count = len(sentences)
             
-            # Normalize average sentence length (assume 50 words is very good, 10 is minimum)
+            # Normalize average sentence length (assume 30 words is very good, 5 is minimum)
             # Using sigmoid-like scaling: score increases with length but plateaus
-            length_component = min(1.0, max(0.0, (avg_sentence_length - 5) / 45))  # 5-50 word range
+            length_component = min(1.0, max(0.0, (avg_sentence_length - 5) / 25))  # 5-30 word range
             
-            # Normalize sentence count (assume 20 sentences is very good, 1 is minimum)
+            # Normalize sentence count (assume 20 sentences is very good, 0 is minimum)
             # Using log scaling to avoid linear explosion
             import math
-            count_component = min(1.0, max(0.0, math.log(sentence_count + 1) / math.log(21)))  # log scale 1-20 range
+            count_component = min(1.0, max(0.0, sentence_count / 20))  # log scale 0-20 range
             
-            # Combine both factors: 60% average length, 40% sentence count
-            length_score = 0.6 * length_component + 0.4 * count_component
+            # Combine both factors: 50% average length, 50% sentence count
+            length_score = 0.5 * length_component + 0.5 * count_component
             
             logger.debug(f"Length analysis - Avg words/sentence: {avg_sentence_length:.1f}, Count: {sentence_count}, Score: {length_score:.4f}")
             return length_score
