@@ -140,31 +140,12 @@ async def optimize_targeted_domains(brand_url: str, iterations: int = 3) -> Dict
         
         domain_data = dimension_content[target_domain]
         
-        # Get original sentences
+        # Get original sentences (can be empty - we'll still optimize)
         original_sentences = domain_data.get('sentences', [])
         
-        # Skip if no sentences
-        if not original_sentences:
-            print(f"  ⏭️ Skipping {target_domain} (no sentences)")
-            results['total_skipped'] += 1
-            
-            # Store detailed results for skipped domain
-            domain_detail = {
-                'domain': target_domain,
-                'status': 'skipped',
-                'original_sentences_count': 0,
-                'original_score': None,
-                'modified_sentences_count': 0,
-                'modified_score': None,
-                'improvement': None,
-                'final_suggestions': None,
-                'error': 'No sentences to optimize',
-                'mongodb_updated': False
-            }
-            results['details'].append(domain_detail)
-            continue
-        
         print(f"  🔄 Optimizing {target_domain} ({len(original_sentences)} sentences)")
+        if len(original_sentences) == 0:
+            print(f"    💡 Starting with empty content - will generate new suggestions and content")
         
         try:
             # Calculate original visibility score
