@@ -190,16 +190,15 @@ EVALUATION TASK:
 Rate the probability (0.0 to 1.0) that these sentences would be quoted or referenced by AI agents like ChatGPT when answering user questions about this brand or topic.
 
 SCORING CRITERIA:
-1. The quality and usefulness of the sentences
-2. The relevance to the brand and dimension
-3. The clarity and readability of the sentences
-4. The credibility and trustworthiness of the sentences
-5. The specificity vs vague generalities of the sentences
-6. The domain on which the sentences are posted is also important, if the domain is in the Large Site List, the probability of being quoted is higher.
-7. The content dimension also affects the probability of being quoted, if the content dimension tend to be asked more often, the probability of being quoted is higher.
-8. If the sentences list is empty, the probability of being quoted is 0.0.
+1. If the sentences are more useful to introduce the brand and dimension, the probability of being quoted is higher.
+2. If the sentences are more clear and readable, the probability of being quoted is higher.
+4. If the sentences list is empty, the probability of being quoted is 0.0. 
+5. If the sentences list is longer and each sentence is in more details, the probability of being quoted is higher.
+5. The domain on which the sentences are posted is also important, if the domain is in the Large Site List, the probability of being quoted is higher.
+6. The content dimension also affects the probability of being quoted, if the content dimension tend to be asked more often, the probability of being quoted is higher.
 
-PAY ATTENTION: Be conservative in your scoring, unless you are very sure, do not give high score, normally the score should be between 0 - 0.5.
+
+PAY ATTENTION: Be conservative in your scoring, unless you are very sure, do not give very high score.
 
 SCORING GUIDE:
 - 0.9-1.0: highly likely to be quoted
@@ -611,8 +610,8 @@ Output the modification suggestions as a paragraph after semicolon:"""
         raw_original_score = await self.predict_visibility_tmp(sentences, dimension, domain, brand_name)
         
         # Subtract a random number from 0-0.2 but keep it above 0
-        import random
-        random_penalty = random.uniform(0, 0.2)
+        #import random
+        random_penalty = 0#random.uniform(0, 0.2)
         original_score = max(0.0, raw_original_score - random_penalty)
         
         

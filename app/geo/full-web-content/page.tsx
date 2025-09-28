@@ -548,12 +548,23 @@ export default function FullWebContentPage() {
                             const isDomainExpanded = expandedDimensions[domainDimensionKey]
                             
                             // Handle both old (string[]) and new ({sentences: [], visibility: number}) formats
+                            // Also handle cases where domainData might be undefined/null
+                            if (!domainData) {
+                              return null // Skip rendering this domain if data is missing
+                            }
+                            
                             const isOldFormat = Array.isArray(domainData)
-                            const sentences = isOldFormat ? domainData : domainData.sentences
-                            const visibility = isOldFormat ? 0 : domainData.visibility
+                            const sentences = isOldFormat ? domainData : (domainData.sentences || [])
+                            const visibility = isOldFormat ? 0 : (domainData.visibility || 0)
                             const modifiedSentences = isOldFormat ? [] : (domainData.modifiedSentences || [])
                             const modifiedVisibility = isOldFormat ? 0 : (domainData.modifiedVisibility || 0)
                             const modificationSuggestions = isOldFormat ? '' : (domainData.modificationSuggestions || '')
+                            
+                            // Additional safety check for sentences
+                            if (!Array.isArray(sentences)) {
+                              console.warn(`Invalid sentences data for ${domain} in ${dimension}:`, sentences)
+                              return null // Skip rendering this domain if sentences data is invalid
+                            }
                             
                             const modificationKey = `${dimension}-${domain}`
                             const isModificationVisible = showModifications[modificationKey]
