@@ -1195,13 +1195,13 @@ Return ONLY a single floating point number between 0.0 and 1.0 representing the 
             # Using sigmoid-like scaling: score increases with length but plateaus
             length_component = min(1.0, max(0.0, (avg_sentence_length - 5) / 25))  # 5-30 word range
             
-            # Normalize sentence count (assume 20 sentences is very good, 0 is minimum)
+            # Normalize sentence count (assume 10 sentences is very good, 0 is minimum)
             # Using log scaling to avoid linear explosion
             import math
-            count_component = min(1.0, max(0.0, sentence_count / 20))  # log scale 0-20 range
+            count_component = min(1.0, max(0.0, sentence_count / 10))  # log scale 0-10 range
             
             # Combine both factors: 50% average length, 50% sentence count
-            length_score = 0.5 * length_component + 0.5 * count_component
+            length_score = 0.3 * length_component + 0.7 * count_component
             
             logger.debug(f"Length analysis - Avg words/sentence: {avg_sentence_length:.1f}, Count: {sentence_count}, Score: {length_score:.4f}")
             return length_score
