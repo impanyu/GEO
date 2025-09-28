@@ -200,12 +200,6 @@ SCORING CRITERIA:
 
 PAY ATTENTION: Be conservative in your scoring, unless you are very sure, do not give very high score.
 
-SCORING GUIDE:
-- 0.9-1.0: highly likely to be quoted
-- 0.7-0.8: probably quoted for relevant queries  
-- 0.5-0.6: might be quoted occasionally
-- 0.3-0.4: unlikely to be quoted
-- 0.0-0.2: very unlikely to be quoted
 
 Return ONLY a single floating point number between 0.0 and 1.0 representing the probability score.
 """
