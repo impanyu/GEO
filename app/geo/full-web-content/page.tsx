@@ -232,7 +232,7 @@ export default function FullWebContentPage() {
     setModificationData(prev => ({
       ...prev,
       [key]: {
-        suggestions: 'No modification suggestions available in database. Run the optimize_all inference task to generate modifications.',
+        suggestions: 'No modification suggestions available in database. Run the optimize_all inference task to generate content modifications.',
         modifiedSentences: []
       }
     }))
@@ -591,14 +591,14 @@ export default function FullWebContentPage() {
                                     <div className="flex items-center space-x-2">
                                       {/* Debug info */}
                                       <span className="text-xs text-gray-400">
-                                        {sentences.length} sentences
+                                        {sentences.length} content items
                                       </span>
                                       
                                       {sentences.length > 0 ? (
                                         <button
                                         onClick={(e) => {
                                           e.stopPropagation()
-                                          console.log('Button clicked for:', dimension, domain, sentences.length, 'sentences')
+                                          console.log('Button clicked for:', dimension, domain, sentences.length, 'content items')
                                           toggleModifications(dimension, domain)
                                         }}
                                           className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 flex items-center space-x-2 border-2 ${
@@ -621,21 +621,21 @@ export default function FullWebContentPage() {
                                         </button>
                                       ) : (
                                         <span className="px-4 py-2 text-xs text-gray-400 bg-gray-100 rounded-lg">
-                                          No sentences to modify
+                                          No content to modify
                                         </span>
                                       )}
                                     </div>
                                   </div>
                                 </div>
 
-                                {/* Sentences Content */}
+                                {/* Content */}
                                 {isDomainExpanded && (
                                   <div className="p-4 space-y-4">
-                                    {/* Original Sentences Panel */}
+                                    {/* Original Content Panel */}
                                     <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                                       <div className="flex items-center space-x-2 mb-3">
                                         <Globe className="w-4 h-4 text-blue-600" />
-                                        <h5 className="font-semibold text-blue-900">Original Sentences</h5>
+                                        <h5 className="font-semibold text-blue-900">Original Content</h5>
                                         {!isOldFormat && (
                                           <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">
                                             Visibility: {(visibility * 100).toFixed(1)}%
@@ -651,20 +651,20 @@ export default function FullWebContentPage() {
                                         {sentences.length === 0 && !isOldFormat && visibility > 0 && (
                                           <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200">
                                             <p className="text-sm text-yellow-700">
-                                              No sentences from web content, but has visibility: {(visibility * 100).toFixed(1)}% 
+                                              No content from web content, but has visibility: {(visibility * 100).toFixed(1)}% 
                                               (calculated from agent recommendation data)
                                             </p>
                                           </div>
                                         )}
                                         {sentences.length === 0 && (isOldFormat || visibility === 0) && (
                                           <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
-                                            <p className="text-sm text-gray-700">No sentences found for this domain</p>
+                                            <p className="text-sm text-gray-700">No content found for this domain</p>
                                           </div>
                                         )}
                                       </div>
                                     </div>
 
-                                    {/* Modification Suggestions and Modified Sentences */}
+                                    {/* Modification Suggestions and Modified Content */}
                                     {isModificationVisible && (
                                       <>
                                         {/* Modification Suggestions Panel */}
@@ -682,11 +682,11 @@ export default function FullWebContentPage() {
                                           </div>
                                         </div>
 
-                                        {/* Modified Sentences Panel */}
+                                        {/* Modified Content Panel */}
                                         <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                                           <div className="flex items-center space-x-2 mb-3">
                                             <Sparkles className="w-4 h-4 text-green-600" />
-                                            <h5 className="font-semibold text-green-900">Modified Sentences</h5>
+                                            <h5 className="font-semibold text-green-900">Modified Content</h5>
                                             {!isOldFormat && modifiedVisibility > 0 && (
                                               <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
                                                 Visibility: {(modifiedVisibility * 100).toFixed(1)}%
@@ -701,7 +701,7 @@ export default function FullWebContentPage() {
                                             ))}
                                             {(!hasStoredModifications && (!currentModificationData?.modifiedSentences || currentModificationData.modifiedSentences.length === 0)) && (
                                               <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
-                                                <p className="text-sm text-gray-700">No modified sentences generated</p>
+                                                <p className="text-sm text-gray-700">No modified content generated</p>
                                               </div>
                                             )}
                                           </div>
