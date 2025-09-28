@@ -421,7 +421,7 @@ Expected Output format: ["Enhanced sentence 1 with better keywords", "Improved s
             print(f"Error applying suggestions with GPT-4o: {e}")
             return original_sentences  # Fallback to original sentences
     
-    def generate_improved_sentences(
+    async def generate_improved_sentences(
         self, 
         sentences: list, 
         dimension: str, 
@@ -522,7 +522,7 @@ Output the modification suggestions as a paragraph after semicolon:"""
             print(f"Iteration {i+1}: Starting from original sentences")
             
             # Always start from original sentences for each iteration
-            generation_results = self.generate_improved_sentences(
+            generation_results = await self.generate_improved_sentences(
                 sentences, dimension, domain, brand_name  # Always use original sentences
             )
             
@@ -805,7 +805,7 @@ async def main():
         
         elif args.task == 'generate':
             # Generate improved sentences and suggestions
-            generation_results = inference.generate_improved_sentences(
+            generation_results = await inference.generate_improved_sentences(
                 args.sentences, args.dimension, args.domain, args.brand_name
             )
             improved = generation_results['modified_sentences']

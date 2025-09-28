@@ -81,7 +81,6 @@ export default function FullWebContentPage() {
   const [expandedDimensions, setExpandedDimensions] = useState<{ [key: string]: boolean }>({})
   const [selectedBrandUrl, setSelectedBrandUrl] = useState<string>('')
   const [showModifications, setShowModifications] = useState<{ [key: string]: boolean }>({})
-  const [loadingModifications, setLoadingModifications] = useState<{ [key: string]: boolean }>({})
   const [modificationData, setModificationData] = useState<{ [key: string]: { suggestions: string, modifiedSentences: string[] } }>({})
 
   // Handle authentication loading
@@ -211,94 +210,47 @@ export default function FullWebContentPage() {
     }))
   }
 
-  const generateModifications = async (sentences: string[], dimension: string, domain: string, brandName: string) => {
+  const loadStoredModifications = (dimension: string, domain: string) => {
     const key = `${dimension}-${domain}`
     
-    // Check if we already have the data stored in the database
+    // Check if we have the data stored in the database
     if (analysis?.websiteContent[dimension]?.[domain] && !Array.isArray(analysis.websiteContent[dimension][domain])) {
       const domainData = analysis.websiteContent[dimension][domain] as any
-      if (domainData.modificationSuggestions && domainData.modifiedSentences) {
+      if (domainData.modificationSuggestions || domainData.modifiedSentences) {
         setModificationData(prev => ({
           ...prev,
           [key]: {
-            suggestions: domainData.modificationSuggestions,
-            modifiedSentences: domainData.modifiedSentences
+            suggestions: domainData.modificationSuggestions || 'No modification suggestions available',
+            modifiedSentences: domainData.modifiedSentences || []
           }
         }))
-        setShowModifications(prev => ({ ...prev, [key]: true }))
-        return
+        return true // Data was found and loaded
       }
     }
     
-    setLoadingModifications(prev => ({ ...prev, [key]: true }))
-    
-    try {
-      // Call the inference API to generate modifications
-      const response = await fetch('/api/inference', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          task: 'generate',
-          sentences: sentences,
-          dimension: dimension,
-          domain: domain,
-          brand_name: brandName
-        })
-      })
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+    // No stored modification data found
+    setModificationData(prev => ({
+      ...prev,
+      [key]: {
+        suggestions: 'No modification suggestions available in database. Run the optimize_all inference task to generate modifications.',
+        modifiedSentences: []
       }
-      
-      const data = await response.json()
-      
-      if (!data.success) {
-        throw new Error(data.error || 'Failed to generate modifications')
-      }
-      
-      // Store the modification data
-      setModificationData(prev => ({
-        ...prev,
-        [key]: {
-          suggestions: data.suggestions || 'No suggestions generated',
-          modifiedSentences: data.modifiedSentences || sentences
-        }
-      }))
-      
-      // Show the modifications
-      setShowModifications(prev => ({ ...prev, [key]: true }))
-      
-    } catch (error) {
-      console.error('Error generating modifications:', error)
-      // Show error state but still allow toggling
-      setModificationData(prev => ({
-        ...prev,
-        [key]: {
-          suggestions: `Error generating suggestions: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          modifiedSentences: sentences
-        }
-      }))
-      setShowModifications(prev => ({ ...prev, [key]: true }))
-    } finally {
-      setLoadingModifications(prev => ({ ...prev, [key]: false }))
-    }
+    }))
+    return false // No data found
   }
 
-  const toggleModifications = (dimension: string, domain: string, sentences: string[], brandName: string) => {
+  const toggleModifications = (dimension: string, domain: string) => {
     const key = `${dimension}-${domain}`
     
     if (showModifications[key]) {
       // Hide modifications
       setShowModifications(prev => ({ ...prev, [key]: false }))
     } else {
-      // Show modifications - generate if not already available
+      // Show modifications - load from stored data if not already loaded
       if (!modificationData[key]) {
-        generateModifications(sentences, dimension, domain, brandName)
-      } else {
-        setShowModifications(prev => ({ ...prev, [key]: true }))
+        loadStoredModifications(dimension, domain)
       }
+      setShowModifications(prev => ({ ...prev, [key]: true }))
     }
   }
 
@@ -604,7 +556,6 @@ export default function FullWebContentPage() {
                             const modificationSuggestions = isOldFormat ? '' : (domainData.modificationSuggestions || '')
                             
                             const modificationKey = `${dimension}-${domain}`
-                            const isModificationLoading = loadingModifications[modificationKey]
                             const isModificationVisible = showModifications[modificationKey]
                             const hasStoredModifications = modificationSuggestions && modifiedSentences.length > 0
                             const currentModificationData = modificationData[modificationKey]
@@ -637,37 +588,43 @@ export default function FullWebContentPage() {
                                     </div>
                                     
                                     {/* Modification Button */}
-                                    {sentences.length > 0 && (
-                                      <button
+                                    <div className="flex items-center space-x-2">
+                                      {/* Debug info */}
+                                      <span className="text-xs text-gray-400">
+                                        {sentences.length} sentences
+                                      </span>
+                                      
+                                      {sentences.length > 0 ? (
+                                        <button
                                         onClick={(e) => {
                                           e.stopPropagation()
-                                          toggleModifications(dimension, domain, sentences, analysis?.brandName || 'Unknown Brand')
+                                          console.log('Button clicked for:', dimension, domain, sentences.length, 'sentences')
+                                          toggleModifications(dimension, domain)
                                         }}
-                                        disabled={isModificationLoading}
-                                        className={`ml-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 flex items-center space-x-2 ${
-                                          isModificationVisible
-                                            ? 'bg-purple-100 text-purple-700 hover:bg-purple-200'
-                                            : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
-                                        } disabled:opacity-50 disabled:cursor-not-allowed`}
-                                      >
-                                        {isModificationLoading ? (
-                                          <>
-                                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current"></div>
-                                            <span>Generating...</span>
-                                          </>
-                                        ) : isModificationVisible ? (
-                                          <>
-                                            <EyeOff className="w-4 h-4" />
-                                            <span>Hide Modifications</span>
-                                          </>
-                                        ) : (
-                                          <>
-                                            <Wand2 className="w-4 h-4" />
-                                            <span>Show Modifications</span>
-                                          </>
-                                        )}
-                                      </button>
-                                    )}
+                                          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 flex items-center space-x-2 border-2 ${
+                                            isModificationVisible
+                                              ? 'bg-purple-100 text-purple-700 hover:bg-purple-200 border-purple-300'
+                                              : 'bg-blue-100 text-blue-700 hover:bg-blue-200 border-blue-300'
+                                          } shadow-sm`}
+                                        >
+                                          {isModificationVisible ? (
+                                            <>
+                                              <EyeOff className="w-4 h-4" />
+                                              <span>Hide Modifications</span>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <Wand2 className="w-4 h-4" />
+                                              <span>Show Modifications</span>
+                                            </>
+                                          )}
+                                        </button>
+                                      ) : (
+                                        <span className="px-4 py-2 text-xs text-gray-400 bg-gray-100 rounded-lg">
+                                          No sentences to modify
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
 
@@ -720,7 +677,7 @@ export default function FullWebContentPage() {
                                             <p className="text-sm text-gray-900">
                                               {hasStoredModifications 
                                                 ? modificationSuggestions 
-                                                : currentModificationData?.suggestions || 'Loading suggestions...'}
+                                                : currentModificationData?.suggestions || 'No modification suggestions available'}
                                             </p>
                                           </div>
                                         </div>
