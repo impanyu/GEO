@@ -659,6 +659,7 @@ Output the modification suggestions as a paragraph after semicolon:"""
             # Decode only the generated part
             input_length = encoding['input_ids'].shape[1]
             generated_text = self.policy_tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
+            print(f"Generated text: {generated_text}")
             
             # Clean up the raw generated text using GPT-4o to get well-formed suggestions
             suggestions = await self._clean_suggestions_with_gpt4o(
@@ -818,30 +819,12 @@ Output the modification suggestions as a paragraph after semicolon:"""
                 results['total_domains'] += 1
                 dimension_results['domains'] += 1
                 
-                # Get original sentences
+                # Get original sentences (can be empty - we'll still optimize)
                 original_sentences = domain_data.get('sentences', [])
                 
-                # Skip if no sentences
-                if not original_sentences:
-                    print(f"  ⏭️ Skipping {domain} (no sentences)")
-                    
-                    # Store detailed results for skipped domain
-                    domain_detail = {
-                        'domain': domain,
-                        'status': 'skipped',
-                        'original_sentences_count': 0,
-                        'original_score': None,
-                        'modified_sentences_count': 0,
-                        'modified_score': None,
-                        'improvement': None,
-                        'final_suggestions': None,
-                        'error': 'No sentences to optimize',
-                        'mongodb_updated': False
-                    }
-                    dimension_results['details'].append(domain_detail)
-                    continue
-                
                 print(f"  🔄 Optimizing {domain} ({len(original_sentences)} sentences)")
+                if len(original_sentences) == 0:
+                    print(f"    💡 Starting with empty content - will generate new suggestions and content")
                 
                 try:
                     # Calculate original visibility score
