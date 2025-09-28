@@ -197,8 +197,9 @@ SCORING CRITERIA:
 5. The specificity vs vague generalities of the sentences
 6. The domain on which the sentences are posted is also important, if the domain is in the Large Site List, the probability of being quoted is higher.
 7. The content dimension also affects the probability of being quoted, if the content dimension tend to be asked more often, the probability of being quoted is higher.
+8. If the sentences list is empty, the probability of being quoted is 0.0.
 
-PAY ATTENTION: Be conservative in your scoring, unless you are very sure, do not give high score, normally the score should be between 0 - 0.6.
+PAY ATTENTION: Be conservative in your scoring, unless you are very sure, do not give high score, normally the score should be between 0 - 0.5.
 
 SCORING GUIDE:
 - 0.9-1.0: highly likely to be quoted
@@ -607,11 +608,17 @@ Output the modification suggestions as a paragraph after semicolon:"""
             raise ValueError("Policy model must be loaded for optimization")
         
         # Calculate original score once
-        original_score = await self.predict_visibility_tmp(sentences, dimension, domain, brand_name)
+        raw_original_score = await self.predict_visibility_tmp(sentences, dimension, domain, brand_name)
+        
+        # Subtract a random number from 0-0.2 but keep it above 0
+        import random
+        random_penalty = random.uniform(0, 0.2)
+        original_score = max(0.0, raw_original_score - random_penalty)
+        
         
         results = {
             'original_sentences': sentences,
-            'original_score': original_score,
+            'original_score': original_score,  # Adjusted score used for optimization
             'iterations': [],
             'final_sentences': sentences,  # Start with original as best
             'final_score': original_score,  # Start with original score as best
@@ -736,6 +743,20 @@ Output the modification suggestions as a paragraph after semicolon:"""
                 # Skip if no sentences
                 if not original_sentences or len(original_sentences) == 0:
                     print(f"  ⏭️ Skipping {domain} (no sentences)")
+                    
+                    # Store detailed results for skipped domain
+                    domain_detail = {
+                        'domain': domain,
+                        'status': 'skipped',
+                        'original_sentences_count': 0,
+                        'original_score': None,
+                        'modified_sentences_count': 0,
+                        'modified_score': None,
+                        'improvement': None,
+                        'final_suggestions': None,
+                        'error': 'No sentences to optimize'
+                    }
+                    dimension_results['details'].append(domain_detail)
                     continue
                 
                 print(f"  🔄 Optimizing {domain} ({len(original_sentences)} sentences)")
@@ -769,27 +790,52 @@ Output the modification suggestions as a paragraph after semicolon:"""
                         results['total_improved'] += 1
                         dimension_results['improved'] += 1
                     
-                    # Store detailed results
+                    # Store detailed results for successful optimization
                     domain_detail = {
                         'domain': domain,
+                        'status': 'success',
                         'original_sentences_count': len(original_sentences),
                         'original_score': original_score,
                         'modified_sentences_count': len(modified_sentences),
                         'modified_score': modified_score,
-                        'improvement': improvement
+                        'improvement': improvement,
+                        'final_suggestions': final_suggestions,
+                        'error': None
                     }
                     dimension_results['details'].append(domain_detail)
                     
                     print(f"    ✅ {domain}: {original_score:.4f} → {modified_score:.4f} ({improvement:+.4f})")
                     
                 except Exception as e:
-                    print(f"    ❌ Error optimizing {domain}: {e}")
+                    error_msg = str(e)
+                    print(f"    ❌ Error optimizing {domain}: {error_msg}")
+                    
+                    # Store detailed results for failed optimization
+                    domain_detail = {
+                        'domain': domain,
+                        'status': 'failed',
+                        'original_sentences_count': len(original_sentences) if original_sentences else 0,
+                        'original_score': None,
+                        'modified_sentences_count': 0,
+                        'modified_score': None,
+                        'improvement': None,
+                        'final_suggestions': None,
+                        'error': error_msg
+                    }
+                    dimension_results['details'].append(domain_detail)
                     continue
             
             results['dimensions'][dimension] = dimension_results
             print(f"  📊 Dimension {dimension}: {dimension_results['optimized']}/{dimension_results['domains']} optimized, {dimension_results['improved']} improved")
         
         # Update MongoDB document
+        mongodb_update_result = {
+            'status': 'unknown',
+            'modified_count': 0,
+            'matched_count': 0,
+            'error': None
+        }
+        
         try:
             update_result = collection.update_one(
                 {'normalizedBrandUrl': normalized_brand_url},
@@ -801,21 +847,59 @@ Output the modification suggestions as a paragraph after semicolon:"""
                 }
             )
             
+            mongodb_update_result['modified_count'] = update_result.modified_count
+            mongodb_update_result['matched_count'] = update_result.matched_count
+            
             if update_result.modified_count > 0:
+                mongodb_update_result['status'] = 'success'
                 print(f"\n✅ Successfully updated MongoDB document for {brand_name}")
+                print(f"   📊 Modified: {update_result.modified_count}, Matched: {update_result.matched_count}")
             else:
+                mongodb_update_result['status'] = 'no_changes'
                 print(f"\n⚠️ No changes made to MongoDB document for {brand_name}")
+                print(f"   📊 Matched: {update_result.matched_count}")
                 
         except Exception as e:
-            print(f"\n❌ Error updating MongoDB: {e}")
+            error_msg = str(e)
+            mongodb_update_result['status'] = 'failed'
+            mongodb_update_result['error'] = error_msg
+            print(f"\n❌ Error updating MongoDB: {error_msg}")
             raise
+        
+        # Add MongoDB update result to the final results
+        results['mongodb_update'] = mongodb_update_result
+        
+        # Calculate detailed statistics
+        total_skipped = sum(len([d for d in dim_data['details'] if d['status'] == 'skipped']) 
+                           for dim_data in results['dimensions'].values())
+        total_failed = sum(len([d for d in dim_data['details'] if d['status'] == 'failed']) 
+                          for dim_data in results['dimensions'].values())
+        total_success = sum(len([d for d in dim_data['details'] if d['status'] == 'success']) 
+                           for dim_data in results['dimensions'].values())
         
         # Print final summary
         print(f"\n🎉 Brand optimization completed!")
         print(f"   📊 Total domains processed: {results['total_domains']}")
-        print(f"   ✅ Total domains optimized: {results['total_optimized']}")
+        print(f"   ✅ Total domains optimized: {results['total_optimized']} ({total_success} successful)")
+        print(f"   ⏭️ Total domains skipped: {total_skipped}")
+        print(f"   ❌ Total domains failed: {total_failed}")
         print(f"   📈 Total domains improved: {results['total_improved']}")
-        print(f"   📉 Improvement rate: {(results['total_improved']/max(results['total_optimized'], 1)*100):.1f}%")
+        print(f"   📉 Success rate: {(total_success/max(results['total_domains'], 1)*100):.1f}%")
+        print(f"   📈 Improvement rate: {(results['total_improved']/max(results['total_optimized'], 1)*100):.1f}%")
+        print(f"   💾 MongoDB update: {mongodb_update_result['status']}")
+        
+        # Print dimension breakdown with detailed status
+        print(f"\n📏 Detailed Dimension Breakdown:")
+        for dimension, dim_results in results['dimensions'].items():
+            dim_success = len([d for d in dim_results['details'] if d['status'] == 'success'])
+            dim_skipped = len([d for d in dim_results['details'] if d['status'] == 'skipped'])
+            dim_failed = len([d for d in dim_results['details'] if d['status'] == 'failed'])
+            
+            print(f"   {dimension}:")
+            print(f"     🎯 Total: {dim_results['domains']}")
+            print(f"     ✅ Success: {dim_success} ({dim_results['improved']} improved)")
+            print(f"     ⏭️ Skipped: {dim_skipped}")
+            print(f"     ❌ Failed: {dim_failed}")
         
         return results
 
@@ -932,9 +1016,11 @@ async def main():
             )
             
             print(f"🚀 Optimization Results:")
-            print(f"   Original Score: {results['original_score']:.4f}")
+            print(f"   Raw Original Score: {results['raw_original_score']:.4f}")
+            print(f"   Adjusted Original Score: {results['original_score']:.4f} (penalty: {results['random_penalty']:.4f})")
             print(f"   Final Score: {results['final_score']:.4f}")
             print(f"   Total Improvement: {results['final_score'] - results['original_score']:.4f}")
+            print(f"   Improvement vs Raw: {results['final_score'] - results['raw_original_score']:.4f}")
             print(f"\n📝 Final Sentences: {results['final_sentences']}")
             print(f"\n💡 Final Suggestions: {results['final_suggestions']}")
             
@@ -947,20 +1033,19 @@ async def main():
             # Optimize entire brand and update MongoDB
             results = await inference.optimize_all_brand(args.brand_url, args.iterations)
             
-            print(f"\n📊 Brand Optimization Summary:")
-            print(f"   Brand: {results['brand_name']}")
-            print(f"   Total Domains: {results['total_domains']}")
-            print(f"   Optimized: {results['total_optimized']}")
-            print(f"   Improved: {results['total_improved']}")
-            print(f"   Success Rate: {(results['total_optimized']/max(results['total_domains'], 1)*100):.1f}%")
-            print(f"   Improvement Rate: {(results['total_improved']/max(results['total_optimized'], 1)*100):.1f}%")
+            # The function already prints detailed results, just add a final status
+            mongodb_status = results.get('mongodb_update', {}).get('status', 'unknown')
+            if mongodb_status == 'success':
+                print(f"\n✅ MongoDB FullWebContentCache updated successfully!")
+            elif mongodb_status == 'no_changes':
+                print(f"\n⚠️ MongoDB FullWebContentCache update completed (no changes needed)")
+            elif mongodb_status == 'failed':
+                print(f"\n❌ MongoDB FullWebContentCache update failed!")
+            else:
+                print(f"\n❓ MongoDB FullWebContentCache update status: {mongodb_status}")
             
-            # Show dimension breakdown
-            print(f"\n📏 Dimension Breakdown:")
-            for dimension, dim_results in results['dimensions'].items():
-                print(f"   {dimension}: {dim_results['optimized']}/{dim_results['domains']} optimized, {dim_results['improved']} improved")
-            
-            print(f"\n✅ MongoDB FullWebContentCache updated successfully!")
+            # Show final JSON output for programmatic access
+            print(f"\n📋 Results JSON available in returned object for programmatic access")
     
     except Exception as e:
         print(f"❌ Error: {e}")

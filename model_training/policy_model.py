@@ -1043,8 +1043,9 @@ SCORING CRITERIA:
 5. The specificity vs vague generalities of the sentences
 6. The domain on which the sentences are posted is also important, if the domain is in the Large Site List, the probability of being quoted is higher.
 7. The content dimension also affects the probability of being quoted, if the content dimension tend to be asked more often, the probability of being quoted is higher.
+8. If the sentences list is empty, the probability of being quoted is 0.0.
 
-PAY ATTENTION: Be conservative in your scoring, unless you are very sure, do not give high score, normally the score should be between 0 - 0.6.
+PAY ATTENTION: Be conservative in your scoring, unless you are very sure, do not give high score, normally the score should be between 0 - 0.5.
 
 SCORING GUIDE:
 - 0.9-1.0: highly likely to be quoted
