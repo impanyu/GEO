@@ -10,7 +10,9 @@
     "generate-prompts": "tsx scripts/generate-prompts.ts",
     "generate-data-table": "tsx scripts/generate-data-table.ts",
     "analyze-web-content": "tsx scripts/analyze-web-content.ts",
+    "analyze-simple-web-content": "tsx scripts/analyze-simple-web-content.ts",
     "analyze-agent-recommendation": "tsx scripts/analyze-agent-recommendation.ts",
+    "analyze-agent-recommendation-simple": "tsx scripts/analyze-agent-recommendation-simple.ts",
     "measure-visibility-for-web-content": "tsx scripts/measure-visibility-for-web-content.ts"
   },
   "dependencies": {

@@ -140,7 +140,7 @@ Return the brand name in JSON format:
 async function extractTopics(content: string): Promise<string[]> {
   try {
     const prompt = `
-Analyze the following brand content and extract 4-6 main topics that best represent the major domains or themes, which are likely to appear in SEO searches.
+Analyze the following brand content and extract 5 main topics that best represent the major domains or themes, which are likely to appear in SEO searches.
 Pay attention: 
 - Do not include any brand name or any words related to any brand in the topics
 - Only include topics relvant to the domain, industry, or products which the brand belongs to
@@ -190,7 +190,7 @@ Return the topics in JSON format:
 async function generateKeywordsForTopic(topic: string): Promise<string[]> {
   try {
     const prompt = `
-Generate 10-15 SEO-style keywords or keyphrases relevant to the topic: "${topic}"
+Generate 10 SEO-style keywords or keyphrases relevant to the topic: "${topic}"
 
 Requirements:
 - Each keyword/keyphrase should be 1-3 words
@@ -333,7 +333,14 @@ async function generatePromptsForUrl(brandUrl: string): Promise<PromptData> {
     
     // Step 3: Extract topics using OpenAI
     console.log('Step 3: Extracting topics...')
-    const topics = await extractTopics(content)
+    let topics = await extractTopics(content)
+    
+    // Hardcode "chat sdk" topic for trtc.io
+    if (normalizedUrl === 'trtc.io') {
+      console.log('Adding hardcoded topic "chat sdk" for trtc.io')
+      topics = ['chat sdk', ...topics.filter(topic => topic.toLowerCase() !== 'chat sdk')]
+    }
+    
     console.log(`Extracted ${topics.length} topics:`, topics)
     
     // Step 4: Generate keywords for each topic

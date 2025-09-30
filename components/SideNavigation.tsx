@@ -87,10 +87,22 @@ const geoSubNavItems = [
     description: 'Web content analysis'
   },
   {
+    name: 'Simple Web Content',
+    href: '/geo/simple-web-content',
+    icon: Globe,
+    description: 'Simplified web content'
+  },
+  {
     name: 'Agent Recommendation',
     href: '/geo/agent-recommendation-content',
     icon: Bot,
     description: 'AI agent recommendations'
+  },
+  {
+    name: 'Simple Agent Rec',
+    href: '/geo/agent-recommendation-simple',
+    icon: Bot,
+    description: 'Simplified agent recommendations'
   },
   {
     name: 'GEO Result',

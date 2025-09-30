@@ -26,13 +26,14 @@ export async function closeDatabaseConnection(): Promise<void> {
   }
 }
 
-// Data model interfaces
+// Data model interfaces - simplified without dimensions
 export interface ContentSnippets {
   [normalizedDomain: string]: string[] // domain -> list of snippets
 }
 
-export interface WebsiteContent {
-  [dimension: string]: ContentSnippets // dimension -> websites with content snippets
+export interface PromptContent {
+  prompt: string
+  contentSnippets: ContentSnippets // domain -> snippets[]
 }
 
 export interface AgentRecommendationContentDocument {
@@ -44,7 +45,7 @@ export interface AgentRecommendationContentDocument {
   totalPrompts: number
   sampledPrompts: number
   callsPerPrompt: number
-  websiteContent: WebsiteContent // dimension -> {domain -> snippets[]}
+  promptsContent: PromptContent[] // array of prompts with their content snippets
 }
 
 // AgentRecommendationContentCache model class
@@ -71,7 +72,7 @@ export class AgentRecommendationContentCache {
     totalPrompts: number,
     sampledPrompts: number,
     callsPerPrompt: number,
-    websiteContent: WebsiteContent
+    promptsContent: PromptContent[]
   ): Promise<string | null> {
     try {
       const collection = await this.getCollection()
@@ -85,7 +86,7 @@ export class AgentRecommendationContentCache {
         totalPrompts,
         sampledPrompts,
         callsPerPrompt,
-        websiteContent
+        promptsContent
       }
 
       const result = await collection.insertOne(document)
@@ -195,7 +196,7 @@ export class AgentRecommendationContentCache {
       totalPrompts: number
       sampledPrompts: number
       callsPerPrompt: number
-      websiteContent: WebsiteContent
+      promptsContent: PromptContent[]
       sampledTime: Date
     }>
   ): Promise<boolean> {
