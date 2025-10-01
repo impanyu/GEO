@@ -105,6 +105,12 @@ const geoSubNavItems = [
     description: 'Simplified agent recommendations'
   },
   {
+    name: 'Policy Report',
+    href: '/geo/policy-report',
+    icon: FileText,
+    description: 'Brand visibility policy analysis'
+  },
+  {
     name: 'GEO Result',
     href: '/optimize',
     icon: BarChart3,
@@ -117,11 +123,11 @@ export default function SideNavigation() {
   const { isCollapsed, setIsCollapsed, geoSubNavOpen, setGeoSubNavOpen } = useNavigation()
 
   return (
-    <div className={`fixed left-0 top-0 h-full bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900 text-white shadow-2xl transition-all duration-300 z-50 ${
+    <div className={`fixed left-0 top-0 h-full bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900 text-white shadow-2xl transition-all duration-300 z-50 flex flex-col ${
       isCollapsed ? 'w-16' : 'w-64'
     }`}>
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-slate-700">
+      <div className="flex items-center justify-between p-4 border-b border-slate-700 flex-shrink-0">
         {!isCollapsed && (
           <div className="flex items-center space-x-2">
             <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
@@ -144,8 +150,11 @@ export default function SideNavigation() {
         </button>
       </div>
 
-      {/* Navigation Items */}
-      <nav className="mt-6 px-2">
+      {/* Navigation Items - Scrollable */}
+      <nav className="flex-1 overflow-y-auto overflow-x-hidden mt-6 px-2 pb-4" style={{
+        scrollbarWidth: 'thin',
+        scrollbarColor: '#475569 #1e293b'
+      }}>
         <div className="space-y-2">
           {navigationItems.map((item) => {
             const isActive = pathname === item.href || 
@@ -306,7 +315,7 @@ export default function SideNavigation() {
 
       {/* Footer */}
       {!isCollapsed && (
-        <div className="absolute bottom-4 left-4 right-4">
+        <div className="flex-shrink-0 p-4">
           <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700">
             <div className="text-xs text-slate-400 text-center">
               AI-Powered Marketing Suite
