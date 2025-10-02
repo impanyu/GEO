@@ -187,50 +187,50 @@ export async function GET(request: NextRequest) {
     console.log(`✅ Found ${analyses.length} agent recommendation analyses`)
     
     // Merge all prompt content from all analyses
-    let allPromptContent = analyses.flatMap(analysis => analysis.promptsContent || [])
-    console.log(`📊 Total prompt content entries: ${allPromptContent.length}`)
+    // Merge all contentSnippets from all analyses
+    let mergedContentSnippets: { [domain: string]: string[] } = {}
+    analyses.forEach(analysis => {
+      if (analysis.contentSnippets) {
+        Object.entries(analysis.contentSnippets).forEach(([domain, sentences]) => {
+          if (!mergedContentSnippets[domain]) {
+            mergedContentSnippets[domain] = []
+          }
+          mergedContentSnippets[domain].push(...sentences)
+        })
+      }
+    })
+    const totalDomains = Object.keys(mergedContentSnippets).length
+    console.log(`📊 Total merged domains: ${totalDomains}`)
     
-    // Extract all prompts for filtering
-    const allPrompts = allPromptContent.map(pc => pc.prompt)
+    // Since we now have merged content, we calculate visibility based on 
+    // brand mentions across all domains in the merged content
+    let brandAppearanceCount = 0
+    let totalSentences = 0
     
-    // Filter prompts by topic if specified
-    let filteredPrompts: string[] = []
-    if (topic && topic.toLowerCase() !== 'all') {
-      filteredPrompts = await filterPromptsByTopic(allPrompts, topic)
+    console.log(`🔍 Checking brand appearances in merged content across ${totalDomains} domains...`)
+    
+    for (const [domain, sentences] of Object.entries(mergedContentSnippets)) {
+      totalSentences += sentences.length
       
-      // Filter prompt content to only include relevant prompts
-      allPromptContent = allPromptContent.filter(pc => 
-        filteredPrompts.includes(pc.prompt)
+      // Check if any sentence in this domain contains the brand
+      const domainHasBrand = sentences.some(sentence => 
+        brandNames.some(brandName => 
+          sentence.toLowerCase().includes(brandName.toLowerCase())
+        )
       )
       
-      console.log(`🎯 Filtered to ${allPromptContent.length} prompts relevant to "${topic}"`)
-    } else {
-      filteredPrompts = allPrompts
-      console.log(`📝 Using all ${allPrompts.length} prompts (no topic filter)`)
-    }
-    
-    // Count brand appearances in filtered prompts
-    let brandAppearanceCount = 0
-    const totalFilteredPrompts = allPromptContent.length
-    
-    console.log(`🔍 Checking brand appearances in ${totalFilteredPrompts} filtered prompts...`)
-    
-    for (let i = 0; i < allPromptContent.length; i++) {
-      const promptContent = allPromptContent[i]
-      const hasBrandAppearance = checkBrandAppearanceInPrompt(brandNames, promptContent.contentSnippets)
-      
-      if (hasBrandAppearance) {
-        brandAppearanceCount++
-        console.log(`✅ Brand found in prompt ${i + 1}: "${promptContent.prompt.substring(0, 50)}..."`)
+      if (domainHasBrand) {
+        brandAppearanceCount += sentences.length
+        console.log(`✅ Brand found in domain ${domain}: ${sentences.length} sentences`)
       }
     }
     
-    // Calculate visibility (brand appearances / total filtered prompts)
-    const visibility = totalFilteredPrompts > 0 ? brandAppearanceCount / totalFilteredPrompts : 0
+    // Calculate visibility (sentences with brand mentions / total sentences)
+    const visibility = totalSentences > 0 ? brandAppearanceCount / totalSentences : 0
     
     console.log(`📊 Visibility calculation:`)
-    console.log(`  - Brand appearances: ${brandAppearanceCount}`)
-    console.log(`  - Total filtered prompts: ${totalFilteredPrompts}`)
+    console.log(`  - Sentences with brand mentions: ${brandAppearanceCount}`)
+    console.log(`  - Total sentences: ${totalSentences}`)
     console.log(`  - Visibility: ${visibility.toFixed(4)} (${(visibility * 100).toFixed(2)}%)`)
     
     // Prepare response
@@ -239,13 +239,13 @@ export async function GET(request: NextRequest) {
       normalizedBrandUrl,
       topic,
       visibility: Math.round(visibility * 10000) / 10000, // Round to 4 decimal places
-      totalPrompts: allPrompts.length,
-      filteredPrompts: totalFilteredPrompts,
-      brandAppearances: brandAppearanceCount,
+      totalDomains: totalDomains,
+      totalSentences: totalSentences,
+      sentencesWithBrandMentions: brandAppearanceCount,
       brandNames,
       metadata: {
         totalAnalyses: analyses.length,
-        agentPlatforms: [...new Set(analyses.map(a => a.agentPlatform))],
+        agentPlatforms: Array.from(new Set(analyses.map(a => a.agentPlatform))),
         sampledTime: analyses.map(a => a.sampledTime).sort().reverse()[0] // Most recent
       }
     }

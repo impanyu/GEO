@@ -1,4 +1,5 @@
 import { MongoClient, Db, Collection } from 'mongodb'
+import { QueryResponse, QueryResponseDocument } from './QueryResponseCache'
 
 // Database connection (reuse the same connection logic)
 let client: MongoClient | null = null
@@ -26,25 +27,6 @@ export async function closeDatabaseConnection(): Promise<void> {
   }
 }
 
-// Data model interfaces
-export interface QueryResponse {
-  output_text: string
-  annotations: Array<{
-    type: string
-    title?: string
-    url?: string
-    index?: number | null
-  }>
-}
-
-export interface QueryResponseDocument {
-  _id?: string
-  prompt: string
-  responses: QueryResponse[]
-  queryDatetime: Date
-  agenticPlatform: string
-  createdDatetime: Date
-}
 
 export interface BrandAnalysis {
   brandName: string

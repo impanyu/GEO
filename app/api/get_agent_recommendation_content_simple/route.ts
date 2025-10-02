@@ -127,41 +127,39 @@ export async function GET(request: NextRequest) {
     console.log(`✅ Found ${analyses.length} agent recommendation analyses`)
     
     // Merge all prompt content from all analyses
-    let allPromptContent = analyses.flatMap(analysis => analysis.promptsContent || [])
-    
-    // Filter prompts by topic if specified
-    if (topic && topic.toLowerCase() !== 'all') {
-      const allPrompts = allPromptContent.map(pc => pc.prompt)
-      const relevantPrompts = await filterPromptsByTopic(allPrompts, topic)
-      
-      // Filter prompt content to only include relevant prompts
-      allPromptContent = allPromptContent.filter(pc => 
-        relevantPrompts.includes(pc.prompt)
-      )
-      
-      console.log(`🎯 Filtered to ${allPromptContent.length} prompts relevant to "${topic}"`)
-    }
-    
-    // Merge sentence lists under each normalized domain
-    const mergedDomainContent: { [domain: string]: string[] } = {}
-    
-    for (const promptContent of allPromptContent) {
-      for (const [domain, sentences] of Object.entries(promptContent.contentSnippets)) {
-        if (!mergedDomainContent[domain]) {
-          mergedDomainContent[domain] = []
-        }
-        mergedDomainContent[domain].push(...sentences)
+    // Merge all contentSnippets from all analyses
+    let mergedContentSnippets: { [domain: string]: string[] } = {}
+    analyses.forEach(analysis => {
+      if (analysis.contentSnippets) {
+        Object.entries(analysis.contentSnippets).forEach(([domain, sentences]) => {
+          if (!mergedContentSnippets[domain]) {
+            mergedContentSnippets[domain] = []
+          }
+          // Add unique sentences only
+          const existingSentences = new Set(mergedContentSnippets[domain])
+          for (const sentence of sentences) {
+            if (!existingSentences.has(sentence)) {
+              mergedContentSnippets[domain].push(sentence)
+              existingSentences.add(sentence)
+            }
+          }
+        })
       }
+    })
+    
+    // Note: Topic filtering is no longer supported since we store merged content
+    // instead of individual prompts. The merged content already contains all relevant sentences.
+    if (topic && topic.toLowerCase() !== 'all') {
+      console.log(`⚠️ Topic filtering "${topic}" is not supported with merged content structure`)
     }
     
-    // Remove duplicates within each domain
-    for (const domain in mergedDomainContent) {
-      mergedDomainContent[domain] = [...new Set(mergedDomainContent[domain])]
-    }
+    console.log(`📊 Merged content from ${analyses.length} analyses:`)
+    console.log(`  - Total domains: ${Object.keys(mergedContentSnippets).length}`)
+    console.log(`  - Total sentences: ${Object.values(mergedContentSnippets).flat().length}`)
     
     // Calculate statistics
-    const totalDomains = Object.keys(mergedDomainContent).length
-    const totalSentences = Object.values(mergedDomainContent).reduce(
+    const totalDomains = Object.keys(mergedContentSnippets).length
+    const totalSentences = Object.values(mergedContentSnippets).reduce(
       (sum, sentences) => sum + sentences.length, 
       0
     )
@@ -174,15 +172,14 @@ export async function GET(request: NextRequest) {
       normalizedBrandUrl,
       topic,
       totalAnalyses: analyses.length,
-      totalPromptsProcessed: allPromptContent.length,
-      domainContent: mergedDomainContent,
+      domainContent: mergedContentSnippets,
       statistics: {
         totalDomains,
         totalSentences,
         averageSentencesPerDomain: totalDomains > 0 ? Math.round(totalSentences / totalDomains) : 0
       },
       metadata: {
-        agentPlatforms: [...new Set(analyses.map(a => a.agentPlatform))],
+        agentPlatforms: Array.from(new Set(analyses.map(a => a.agentPlatform))),
         sampledTime: analyses.map(a => a.sampledTime).sort().reverse()[0] // Most recent
       }
     }

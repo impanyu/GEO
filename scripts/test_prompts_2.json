@@ -1,0 +1,23 @@
+[
+    "Which real-time messaging platforms are best alternatives to a custom WebSocket chat backend?",
+    "What are pros and cons of using a third-party chat SDK rather than building your own chat server?",
+    "Compare scaling, latency, and cost tradeoffs among real-time chat providers for a global user base.",
+    "How to choose a chat platform for voice + video + messaging features in a mobile app?",
+    "Which chat infrastructure options support pushing file attachments, image thumbnails, and large media efficiently?",
+    "What are the differences between pub/sub messaging services and full chat SDKs?",
+    "How do you architect presence, typing indicators, and read receipts in a chat system using a platform?",
+    "What are the enterprise features (SLAs, compliance, audit logs) to look for in chat / messaging vendors?",
+    "How to migrate from one chat provider to another with minimal downtime and data loss?",
+    "Which chat backends support on-premise / self-hosted deployment for greater control?",
+    "In which cases would you prefer a messaging infrastructure service rather than a full chat SDK?",
+    "What cost model (MAU, messages, media) do chat platform vendors typically use, and how to project your costs?",
+    "Show me a head-to-head feature comparison between major chat SDKs.",
+    "Explain how to build a marketplace chat (buyer ↔ seller) using a managed chat API + SDK.",
+    "Which chat SDKs or platforms are better suited for extremely high message throughput & fan-out broadcasts?",
+    "How to integrate real-time chat + translation + moderation using existing platforms?",
+    "Which platforms provide UI toolkits / widgets vs requiring fully custom UI integration?",
+    "How to provide offline message queuing, sync, and local storage using a chat SDK?",
+    "What are typical latency benchmarks (ms) across regions for leading real-time chat platforms?",
+    "Which services support combining chat + live video / streaming in a unified SDK?"
+  ]
+  

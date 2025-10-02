@@ -7,7 +7,6 @@ dotenv.config({ path: '.env.local' })
 import { 
   AgentRecommendationContentCache,
   closeDatabaseConnection,
-  type PromptContent,
   type ContentSnippets
 } from '../lib/models/AgentRecommendationContentCache'
 import { PromptCache } from '../lib/models/PromptCache'
@@ -571,7 +570,7 @@ async function analyzeAgentRecommendations(
     console.log(`🎲 Sampled ${sampledPrompts.length} prompts from ${allPrompts.length} total`)
     
     // Step 3 & 4: Query agent platform and extract content for each prompt
-    const promptsContent: PromptContent[] = []
+    const mergedContentSnippets: ContentSnippets = {}
     let documentId: string | null = null
     
     // Try to find existing document for incremental updates

@@ -17,7 +17,14 @@ import {
   PromptDomainSentencesVisibilityTrainingDataCache,
   closeDatabaseConnection as closeTrainingDataConnection
 } from '../lib/models/PromptDomainSentencesVisibilityTrainingDataCache'
+import { 
+  QueryResponseCache,
+  type QueryResponseDocument,
+  closeDatabaseConnection as closeQueryResponseConnection
+} from '../lib/models/QueryResponseCache'
+import { normalizeUrl } from '../lib/models/PromptCache'
 import OpenAI from 'openai'
+import fs from 'fs'
 
 // Initialize OpenAI client for embeddings
 let openaiClient: OpenAI
@@ -29,6 +36,61 @@ function getOpenAI(): OpenAI {
     })
   }
   return openaiClient
+}
+
+/**
+ * Load prompts from JSON file
+ */
+function loadPromptsFromFile(filePath: string): string[] {
+  try {
+    console.log(`📁 Loading prompts from: ${filePath}`)
+    
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`File not found: ${filePath}`)
+    }
+    
+    const fileContent = fs.readFileSync(filePath, 'utf-8')
+    const parsed = JSON.parse(fileContent)
+    
+    let prompts: string[] = []
+    
+    if (Array.isArray(parsed)) {
+      // If it's an array, assume each element is a prompt (string or object with prompt field)
+      prompts = parsed.map(item => {
+        if (typeof item === 'string') {
+          return item
+        } else if (typeof item === 'object' && item.prompt) {
+          return item.prompt
+        } else if (typeof item === 'object' && item.text) {
+          return item.text
+        } else {
+          return String(item)
+        }
+      })
+    } else if (typeof parsed === 'object' && parsed.prompts && Array.isArray(parsed.prompts)) {
+      // If it's an object with a prompts array
+      prompts = parsed.prompts.map((item: any) => {
+        if (typeof item === 'string') {
+          return item
+        } else if (typeof item === 'object' && item.prompt) {
+          return item.prompt
+        } else if (typeof item === 'object' && item.text) {
+          return item.text
+        } else {
+          return String(item)
+        }
+      })
+    } else {
+      throw new Error('Invalid JSON format. Expected an array of prompts or an object with a "prompts" array.')
+    }
+    
+    console.log(`✅ Loaded ${prompts.length} prompts from file`)
+    return prompts.filter(prompt => prompt && prompt.trim().length > 0)
+    
+  } catch (error) {
+    console.error('❌ Error loading prompts from file:', error)
+    throw error
+  }
 }
 
 /**
@@ -131,10 +193,12 @@ async function createFeatureVector(prompt: string, domain: string, sentences: st
 }
 
 /**
- * Calculate visibility for agent recommendation content
+ * Calculate visibility for agent recommendation content based on query responses
  */
 async function calculateAgentRecommendationVisibility(
-  agentDoc: AgentRecommendationContentDocument
+  prompt: string,
+  agentDoc: AgentRecommendationContentDocument,
+  queryResponseDoc: QueryResponseDocument
 ): Promise<Array<{
   prompt: string
   domain: string
@@ -150,46 +214,50 @@ async function calculateAgentRecommendationVisibility(
     embedding: number[]
   }> = []
 
-  console.log(`📊 Processing agent recommendation document with ${agentDoc.promptsContent?.length || 0} prompts`)
+  console.log(`📊 Processing agent recommendation visibility for prompt: "${prompt.substring(0, 50)}..."`)
 
-  if (!agentDoc.promptsContent) {
+  if (!agentDoc.contentSnippets) {
+    console.log(`⚠️ No content snippets in agent document`)
     return results
   }
 
-  for (const promptContent of agentDoc.promptsContent) {
-    const prompt = promptContent.prompt
-    const contentSnippets = promptContent.contentSnippets
+  // Merge all annotations from all responses for this prompt
+  const allAnnotations = queryResponseDoc.responses.flatMap(response => response.annotations || [])
+  const totalAnnotationsCount = allAnnotations.length
+  
+  console.log(`  📎 Total annotations from all responses: ${totalAnnotationsCount}`)
+  
+  if (totalAnnotationsCount === 0) {
+    console.log(`    ⚠️ No annotations found, skipping prompt`)
+    return results
+  }
+
+  // For each domain in agent content snippets
+  for (const [domain, sentences] of Object.entries(agentDoc.contentSnippets)) {
+    // Count how many times this normalized domain appears in annotation URLs
+    let domainAppearanceCount = 0
     
-    // Calculate total sentences across all domains for this prompt
-    const totalSentencesInPrompt = Object.values(contentSnippets).reduce(
-      (sum, sentences) => sum + sentences.length,
-      0
-    )
-    
-    console.log(`  📝 Prompt: "${prompt.substring(0, 50)}..." - ${totalSentencesInPrompt} total sentences`)
-    
-    if (totalSentencesInPrompt === 0) {
-      console.log(`    ⚠️ Skipping prompt with no sentences`)
-      continue
+    for (const annotation of allAnnotations) {
+      if (annotation.url && annotation.url.includes(domain)) {
+        domainAppearanceCount++
+      }
     }
     
-    // Calculate visibility for each domain in this prompt
-    for (const [domain, sentences] of Object.entries(contentSnippets)) {
-      const visibility = sentences.length / totalSentencesInPrompt
-      
-      // Compute embedding for this tuple
-      const embedding = await createFeatureVector(prompt, domain, sentences)
-      
-      results.push({
-        prompt,
-        domain,
-        sentences,
-        visibility,
-        embedding
-      })
-      
-      console.log(`    🌐 Domain: ${domain} - ${sentences.length} sentences - visibility: ${(visibility * 100).toFixed(2)}%`)
-    }
+    // Calculate visibility: domain appearances / total annotations
+    const visibility = domainAppearanceCount / totalAnnotationsCount
+    
+    // Compute embedding for this tuple
+    const embedding = await createFeatureVector(prompt, domain, sentences)
+    
+    results.push({
+      prompt,
+      domain,
+      sentences,
+      visibility,
+      embedding
+    })
+    
+    console.log(`    🌐 Domain: ${domain} - ${domainAppearanceCount}/${totalAnnotationsCount} appearances - visibility: ${(visibility * 100).toFixed(2)}%`)
   }
 
   console.log(`✅ Generated ${results.length} training entries from agent recommendation content`)
@@ -197,11 +265,12 @@ async function calculateAgentRecommendationVisibility(
 }
 
 /**
- * Calculate visibility for simple web content against agent recommendation prompts
+ * Calculate visibility for simple web content based on query responses
  */
 async function calculateSimpleWebContentVisibility(
+  prompt: string,
   simpleWebDocs: SimpleWebContentDocument[],
-  agentDoc: AgentRecommendationContentDocument
+  queryResponseDoc: QueryResponseDocument
 ): Promise<Array<{
   prompt: string
   domain: string
@@ -217,10 +286,16 @@ async function calculateSimpleWebContentVisibility(
     embedding: number[]
   }> = []
 
-  console.log(`📊 Processing ${simpleWebDocs.length} simple web content documents against agent prompts`)
+  console.log(`📊 Processing ${simpleWebDocs.length} simple web content documents for prompt: "${prompt.substring(0, 50)}..."`)
 
-  if (!agentDoc.promptsContent) {
-    console.log(`⚠️ No prompts content in agent document`)
+  // Merge all annotations from all responses for this prompt
+  const allAnnotations = queryResponseDoc.responses.flatMap(response => response.annotations || [])
+  const totalAnnotationsCount = allAnnotations.length
+  
+  console.log(`  📎 Total annotations from all responses: ${totalAnnotationsCount}`)
+  
+  if (totalAnnotationsCount === 0) {
+    console.log(`    ⚠️ No annotations found, skipping prompt`)
     return results
   }
 
@@ -233,57 +308,62 @@ async function calculateSimpleWebContentVisibility(
     for (const [domain, domainContent] of Object.entries(simpleDoc.websiteContent)) {
       const sentences = domainContent.sentences || []
       
-      if (sentences.length === 0) {
-        console.log(`  🌐 Domain: ${domain} - no sentences, skipping`)
-        continue
-      }
-      
       console.log(`  🌐 Domain: ${domain} - ${sentences.length} sentences`)
       
-      // For each prompt in the agent recommendation content
-      for (const promptContent of agentDoc.promptsContent) {
-        const prompt = promptContent.prompt
-        const agentContentSnippets = promptContent.contentSnippets
+      // Count how many times the brand name appears in combined annotation context
+      let brandMentionCount = 0
+      
+      for (let responseIndex = 0; responseIndex < queryResponseDoc.responses.length; responseIndex++) {
+        const response = queryResponseDoc.responses[responseIndex]
+        const outputText = response.output_text || ''
+        const annotations = response.annotations || []
         
-        // Calculate total sentences across all domains for this prompt in agent content
-        const totalSentencesInAgentPrompt = Object.values(agentContentSnippets).reduce(
-          (sum, agentSentences) => sum + agentSentences.length,
-          0
-        )
-        
-        if (totalSentencesInAgentPrompt === 0) {
-          console.log(`    📝 Prompt: "${prompt.substring(0, 30)}..." - no sentences in agent content, skipping`)
-          continue
-        }
-        
-        // Check if this domain exists in the agent content for this prompt
-        const agentSentencesForDomain = agentContentSnippets[domain] || []
-        
-        // Count sentences in agent content for this prompt+domain that contain the brand name
-        let brandMentionCount = 0
-        
-        for (const agentSentence of agentSentencesForDomain) {
-          if (sentenceContainsBrand(agentSentence, brandName)) {
+        for (const annotation of annotations) {
+          // Combine annotation URL, title, and text snippet from output_text
+          let combinedContext = ''
+          
+          // Add URL if available
+          if (annotation.url) {
+            combinedContext += annotation.url + ' '
+          }
+          
+          // Add title if available
+          if (annotation.title) {
+            combinedContext += annotation.title + ' '
+          }
+          
+          // Add text snippet from output_text using annotation location
+          if (annotation.location && annotation.location.start !== undefined && annotation.location.end !== undefined) {
+            const start = Math.max(0, annotation.location.start)
+            const end = Math.min(outputText.length, annotation.location.end)
+            if (start < end) {
+              const textSnippet = outputText.substring(start, end)
+              combinedContext += textSnippet
+            }
+          }
+          
+          // Check if brand name appears in the combined context
+          if (combinedContext && sentenceContainsBrand(combinedContext, brandName)) {
             brandMentionCount++
           }
         }
-        
-        // Calculate visibility: brand mentions in agent[prompt][domain] / total sentences in agent[prompt]
-        const visibility = brandMentionCount / totalSentencesInAgentPrompt
-        
-        // Compute embedding for this tuple
-        const embedding = await createFeatureVector(prompt, domain, sentences)
-        
-        results.push({
-          prompt,
-          domain,
-          sentences, // This is the sentence list from simplewebcontentdocument
-          visibility,
-          embedding
-        })
-        
-        console.log(`    📝 Prompt: "${prompt.substring(0, 30)}..." - ${brandMentionCount}/${totalSentencesInAgentPrompt} brand mentions in agent[${domain}] - visibility: ${(visibility * 100).toFixed(2)}%`)
       }
+      
+      // Calculate visibility: brand mentions in annotation titles / total annotations
+      const visibility = brandMentionCount / totalAnnotationsCount
+      
+      // Compute embedding for this tuple
+      const embedding = await createFeatureVector(prompt, domain, sentences)
+      
+      results.push({
+        prompt,
+        domain,
+        sentences, // This is the sentence list from simplewebcontentdocument
+        visibility,
+        embedding
+      })
+      
+      console.log(`    📝 Brand mentions in titles: ${brandMentionCount}/${totalAnnotationsCount} - visibility: ${(visibility * 100).toFixed(2)}%`)
     }
   }
 
@@ -294,12 +374,22 @@ async function calculateSimpleWebContentVisibility(
 /**
  * Main function to generate training data
  */
-async function generateTrainingData(): Promise<void> {
+async function generateTrainingData(promptsFilePath: string): Promise<void> {
   try {
     console.log(`🚀 Starting training data generation`)
+    console.log(`📁 Prompts file: ${promptsFilePath}`)
     
-    // Step 1: Load agent recommendation content documents with 'test' in brandNames
-    console.log(`\n📥 Step 1: Loading agent recommendation content documents...`)
+    // Step 1: Load prompts from JSON file
+    console.log(`\n📥 Step 1: Loading prompts from JSON file...`)
+    const prompts = loadPromptsFromFile(promptsFilePath)
+    
+    if (prompts.length === 0) {
+      console.log(`❌ No prompts found in the file. Exiting.`)
+      return
+    }
+    
+    // Step 2: Load agent recommendation content document with 'test' in brandNames (should be only one)
+    console.log(`\n📥 Step 2: Loading agent recommendation content document...`)
     const agentCollection = await AgentRecommendationContentCache.getCollectionInstance()
     const agentDocs = await agentCollection.find({
       brandNames: { $in: ['test'] }
@@ -312,8 +402,16 @@ async function generateTrainingData(): Promise<void> {
       return
     }
     
-    // Step 2: Load all simple web content documents
-    console.log(`\n📥 Step 2: Loading simple web content documents...`)
+    if (agentDocs.length > 1) {
+      console.log(`⚠️ Found multiple agent recommendation documents, using the first one`)
+    }
+    
+    const agentDoc = agentDocs[0]
+    console.log(`  🤖 Platform: ${agentDoc.agentPlatform}`)
+    console.log(`  🏢 Brands: ${agentDoc.brandNames?.join(', ')}`)
+    
+    // Step 3: Load all simple web content documents
+    console.log(`\n📥 Step 3: Loading simple web content documents...`)
     const simpleWebResult = await SimpleWebContentCache.findAll()
     const simpleWebDocs = simpleWebResult.items
     
@@ -324,59 +422,61 @@ async function generateTrainingData(): Promise<void> {
       return
     }
     
-    // Step 3: Process each agent recommendation document
-    console.log(`\n🔄 Step 3: Processing agent recommendation documents...`)
-    const allTrainingEntries: Array<{
-      prompt: string
-      domain: string
-      sentences: string[]
-      visibility: number
-      embedding: number[]
-    }> = []
-    
-    for (let i = 0; i < agentDocs.length; i++) {
-      const agentDoc = agentDocs[i]
-      console.log(`\n📄 Processing agent document ${i + 1}/${agentDocs.length}`)
-      console.log(`  🤖 Platform: ${agentDoc.agentPlatform}`)
-      console.log(`  🏢 Brands: ${agentDoc.brandNames?.join(', ')}`)
-      
-      // Step 3a: Calculate visibility for agent recommendation content
-      console.log(`\n🔄 Step 3a: Calculating agent recommendation visibility...`)
-      const agentEntries = await calculateAgentRecommendationVisibility(agentDoc)
-      allTrainingEntries.push(...agentEntries)
-      
-      // Step 3b: Calculate visibility for simple web content against this agent document
-      console.log(`\n🔄 Step 3b: Calculating simple web content visibility...`)
-      const simpleWebEntries = await calculateSimpleWebContentVisibility(simpleWebDocs, agentDoc)
-      allTrainingEntries.push(...simpleWebEntries)
-    }
-    
-    console.log(`\n📊 Total training entries generated: ${allTrainingEntries.length}`)
-    
-    // Step 4: Clear existing training data and store new entries
-    console.log(`\n💾 Step 4: Storing training data in MongoDB...`)
-    
-    // Clear existing data
+    // Step 4: Clear existing training data
+    console.log(`\n🗑️ Step 4: Clearing existing training data...`)
     const deletedCount = await PromptDomainSentencesVisibilityTrainingDataCache.deleteAll()
     console.log(`🗑️ Deleted ${deletedCount} existing training entries`)
     
-    // Store new data in batches
-    const batchSize = 1000
-    let storedCount = 0
+    // Step 5: Process each prompt
+    console.log(`\n🔄 Step 5: Processing prompts and generating training data...`)
     
-    for (let i = 0; i < allTrainingEntries.length; i += batchSize) {
-      const batch = allTrainingEntries.slice(i, i + batchSize)
-      const insertedIds = await PromptDomainSentencesVisibilityTrainingDataCache.createMany(batch)
-      storedCount += insertedIds.length
+    for (let i = 0; i < prompts.length; i++) {
+      const prompt = prompts[i]
+      console.log(`\n📝 Processing prompt ${i + 1}/${prompts.length}: "${prompt.substring(0, 50)}..."`)
       
-      const progress = ((i + batch.length) / allTrainingEntries.length * 100).toFixed(1)
-      console.log(`💾 Stored batch ${Math.floor(i / batchSize) + 1}: ${insertedIds.length} entries (${progress}% complete)`)
+      try {
+        // Step 5.1: Load query response document for this prompt
+        const queryResponseDoc = await QueryResponseCache.findByPrompt(prompt)
+        
+        if (!queryResponseDoc || queryResponseDoc.length === 0) {
+          console.log(`  ⚠️ No query response found for this prompt, skipping`)
+          continue
+        }
+        
+        if (queryResponseDoc.length > 1) {
+          console.log(`  ⚠️ Found multiple query responses, using the first one`)
+        }
+        
+        const queryDoc = queryResponseDoc[0]
+        console.log(`  📎 Found query response with ${queryDoc.responses.length} responses`)
+        
+        // Step 5.2: Calculate agent recommendation visibility
+        console.log(`  🔄 Step 5.2: Calculating agent recommendation visibility...`)
+        const agentEntries = await calculateAgentRecommendationVisibility(prompt, agentDoc, queryDoc)
+        
+        // Step 5.3: Calculate simple web content visibility
+        console.log(`  🔄 Step 5.3: Calculating simple web content visibility...`)
+        const simpleWebEntries = await calculateSimpleWebContentVisibility(prompt, simpleWebDocs, queryDoc)
+        
+        // Step 5.4: Store training data for this prompt
+        const allEntriesForPrompt = [...agentEntries, ...simpleWebEntries]
+        
+        if (allEntriesForPrompt.length > 0) {
+          console.log(`  💾 Storing ${allEntriesForPrompt.length} training entries for this prompt...`)
+          const insertedIds = await PromptDomainSentencesVisibilityTrainingDataCache.createMany(allEntriesForPrompt)
+          console.log(`  ✅ Stored ${insertedIds.length} entries for prompt ${i + 1}`)
+        } else {
+          console.log(`  ⚠️ No training entries generated for this prompt`)
+        }
+        
+      } catch (error) {
+        console.error(`  ❌ Error processing prompt ${i + 1}:`, error)
+        continue
+      }
     }
     
-    console.log(`✅ Successfully stored ${storedCount} training entries`)
-    
-    // Step 5: Generate statistics
-    console.log(`\n📊 Step 5: Generating statistics...`)
+    // Step 6: Generate final statistics
+    console.log(`\n📊 Step 6: Generating final statistics...`)
     const stats = await PromptDomainSentencesVisibilityTrainingDataCache.getStats()
     
     console.log(`\n📈 Training Data Statistics:`)
@@ -398,6 +498,28 @@ async function generateTrainingData(): Promise<void> {
  * CLI interface
  */
 async function main() {
+  const args = process.argv.slice(2)
+  
+  if (args.length !== 1) {
+    console.log('Usage: tsx scripts/generate-prompt-domain-sentences-visibility-training-data.ts <json-file-path>')
+    console.log('       json-file-path: path to JSON file containing array of prompts')
+    console.log('Example: tsx scripts/generate-prompt-domain-sentences-visibility-training-data.ts ./prompts.json')
+    console.log('')
+    console.log('JSON file format examples:')
+    console.log('1. Simple array: ["prompt 1", "prompt 2", ...]')
+    console.log('2. Object with prompts array: {"prompts": ["prompt 1", "prompt 2", ...]}')
+    console.log('3. Array of objects: [{"prompt": "text"}, {"text": "text"}, ...]')
+    process.exit(1)
+  }
+  
+  const [jsonFilePath] = args
+  
+  // Validate file path
+  if (!fs.existsSync(jsonFilePath)) {
+    console.log(`❌ File not found: ${jsonFilePath}`)
+    process.exit(1)
+  }
+  
   // Check required environment variables
   const requiredEnvVars = ['MONGODB_URI', 'OPENAI_API_KEY']
   const missingVars = requiredEnvVars.filter(varName => !process.env[varName])
@@ -410,13 +532,14 @@ async function main() {
   }
 
   try {
-    await generateTrainingData()
+    await generateTrainingData(jsonFilePath)
   } catch (error) {
     console.error('\n❌ Training data generation failed:', error)
     process.exit(1)
   } finally {
-    // Close database connection
+    // Close database connections
     await closeTrainingDataConnection()
+    await closeQueryResponseConnection()
     process.exit(0)
   }
 }
