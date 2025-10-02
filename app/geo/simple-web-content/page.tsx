@@ -30,12 +30,24 @@ interface WebsiteContent {
 }
 
 interface SimpleWebContentAnalysis {
-  _id: string
-  brandName: string
+  _id?: string
+  brandName?: string
   brandUrl: string
   normalizedBrandUrl: string
-  sampledTime: string
-  websiteContent: WebsiteContent
+  sampledTime?: string
+  websiteContent?: WebsiteContent
+  // API response structure
+  domainContent?: { [domain: string]: string[] }
+  totalAnalyses?: number
+  totalPromptsProcessed?: number
+  uniqueDomains?: number
+  totalSentences?: number
+  metadata?: {
+    agentPlatforms: string[]
+    sampledTime: string
+    totalPrompts: number
+    sampledPrompts: number
+  }
 }
 
 interface ModificationData {
@@ -55,6 +67,30 @@ export default function SimpleWebContentPage() {
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set())
   const [showModifications, setShowModifications] = useState<Set<string>>(new Set())
   const [modificationData, setModificationData] = useState<ModificationData>({})
+
+  // Helper function to normalize analysis data structure
+  const getWebsiteContent = useCallback((analysis: SimpleWebContentAnalysis): WebsiteContent => {
+    if (analysis.websiteContent) {
+      return analysis.websiteContent
+    }
+    
+    if (analysis.domainContent) {
+      // Convert domainContent to websiteContent format
+      const websiteContent: WebsiteContent = {}
+      for (const [domain, sentences] of Object.entries(analysis.domainContent)) {
+        websiteContent[domain] = {
+          sentences: sentences || [],
+          visibility: 0,
+          modifiedSentences: [],
+          modifiedVisibility: 0,
+          modificationSuggestions: ''
+        }
+      }
+      return websiteContent
+    }
+    
+    return {}
+  }, [])
 
   // Load all analyses
   const loadAnalyses = useCallback(async () => {
@@ -153,7 +189,7 @@ export default function SimpleWebContentPage() {
 
   // Filter analyses based on search term
   const filteredAnalyses = analyses.filter(analysis =>
-    analysis.brandName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (String(analysis.brandName || '').toLowerCase()).includes(searchTerm.toLowerCase()) ||
     analysis.brandUrl.toLowerCase().includes(searchTerm.toLowerCase())
   )
 
@@ -218,7 +254,9 @@ export default function SimpleWebContentPage() {
             <div className="bg-white rounded-xl shadow-lg p-6">
               <div className="flex items-start justify-between">
                 <div>
-                  <h2 className="text-2xl font-bold text-gray-900 mb-2">{selectedAnalysis.brandName}</h2>
+                  <h2 className="text-2xl font-bold text-gray-900 mb-2">
+                    {String(selectedAnalysis.brandName || selectedAnalysis.brandUrl)}
+                  </h2>
                   <div className="flex items-center space-x-4 text-sm text-gray-600">
                     <div className="flex items-center space-x-1">
                       <ExternalLink className="h-4 w-4" />
@@ -233,14 +271,21 @@ export default function SimpleWebContentPage() {
                     </div>
                     <div className="flex items-center space-x-1">
                       <Calendar className="h-4 w-4" />
-                      <span>{new Date(selectedAnalysis.sampledTime).toLocaleDateString()}</span>
+                      <span>
+                        {selectedAnalysis.sampledTime 
+                          ? new Date(selectedAnalysis.sampledTime).toLocaleDateString()
+                          : selectedAnalysis.metadata?.sampledTime 
+                            ? new Date(String(selectedAnalysis.metadata.sampledTime)).toLocaleDateString()
+                            : 'N/A'
+                        }
+                      </span>
                     </div>
                   </div>
                 </div>
                 <div className="text-right">
                   <div className="text-sm text-gray-600">Domains</div>
                   <div className="text-2xl font-bold text-blue-600">
-                    {Object.keys(selectedAnalysis.websiteContent).length}
+                    {Object.keys(getWebsiteContent(selectedAnalysis)).length}
                   </div>
                 </div>
               </div>
@@ -248,7 +293,7 @@ export default function SimpleWebContentPage() {
 
             {/* Domains */}
             <div className="space-y-4">
-              {Object.entries(selectedAnalysis.websiteContent)
+              {Object.entries(getWebsiteContent(selectedAnalysis))
                 .sort(([, a], [, b]) => b.sentences.length - a.sentences.length)
                 .map(([domain, domainData]) => {
                   const isExpanded = expandedDomains.has(domain)
@@ -409,21 +454,24 @@ export default function SimpleWebContentPage() {
           <div className="grid gap-6">
             {filteredAnalyses.length > 0 ? (
               filteredAnalyses.map((analysis) => {
-                const totalDomains = Object.keys(analysis.websiteContent).length
-                const totalSentences = Object.values(analysis.websiteContent).reduce(
+                const websiteContent = getWebsiteContent(analysis)
+                const totalDomains = Object.keys(websiteContent).length
+                const totalSentences = Object.values(websiteContent).reduce(
                   (sum, domainContent) => sum + domainContent.sentences.length, 
                   0
                 )
 
                 return (
                   <div 
-                    key={analysis._id} 
+                    key={analysis._id || analysis.brandUrl} 
                     className="bg-white rounded-xl shadow-lg p-6 cursor-pointer hover:shadow-xl transition-shadow"
                     onClick={() => loadAnalysis(analysis.brandUrl)}
                   >
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
-                        <h3 className="text-xl font-bold text-gray-900 mb-2">{analysis.brandName}</h3>
+                        <h3 className="text-xl font-bold text-gray-900 mb-2">
+                          {String(analysis.brandName || analysis.brandUrl)}
+                        </h3>
                         <div className="flex items-center space-x-4 text-sm text-gray-600 mb-4">
                           <div className="flex items-center space-x-1">
                             <ExternalLink className="h-4 w-4" />
@@ -431,7 +479,14 @@ export default function SimpleWebContentPage() {
                           </div>
                           <div className="flex items-center space-x-1">
                             <Calendar className="h-4 w-4" />
-                            <span>{new Date(analysis.sampledTime).toLocaleDateString()}</span>
+                            <span>
+                              {analysis.sampledTime 
+                                ? new Date(analysis.sampledTime).toLocaleDateString()
+                                : analysis.metadata?.sampledTime 
+                                  ? new Date(String(analysis.metadata.sampledTime)).toLocaleDateString()
+                                  : 'N/A'
+                              }
+                            </span>
                           </div>
                         </div>
                         <div className="flex items-center space-x-6">

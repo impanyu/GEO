@@ -1,15 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { AgentRecommendationContentCache } from '../../../lib/models/AgentRecommendationContentCache'
+import { SimpleWebContentCache } from '../../../lib/models/SimpleWebContentCache'
 import { normalizeUrl } from '../../../lib/models/PromptCache'
-
-// Interface for merged domain content
-interface MergedDomainContent {
-  [domain: string]: string[]
-}
 
 export async function GET(request: NextRequest) {
   try {
-    console.log('🔍 API Request - Get Simple Web Content (Merged from Prompts)')
+    console.log('🔍 API Request - Get Simple Web Content')
     
     const { searchParams } = new URL(request.url)
     const brandUrl = searchParams.get('brandUrl')
@@ -22,80 +17,47 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    console.log(`🔍 Looking for agent recommendation content for: ${brandUrl}`)
+    console.log(`🔍 Looking for simple web content for: ${brandUrl}`)
     
     // Normalize the brand URL for consistent lookup
     const normalizedBrandUrl = normalizeUrl(brandUrl)
     console.log(`🔍 Searching for normalized URL: ${normalizedBrandUrl}`)
     
-    // Find documents that contain this brand URL
-    const analyses = await AgentRecommendationContentCache.findByBrandUrls([normalizedBrandUrl])
+    // Find the document in SimpleWebContentCache
+    const analysis = await SimpleWebContentCache.findByBrandUrl(normalizedBrandUrl)
     
-    if (analyses.length === 0) {
-      console.log(`❌ No agent recommendation content found for: ${brandUrl}`)
+    if (!analysis) {
+      console.log(`❌ No simple web content found for: ${brandUrl}`)
       return NextResponse.json(
-        { error: 'Agent recommendation content not found for this brand' },
+        { error: 'Simple web content not found for this brand' },
         { status: 404 }
       )
     }
 
-    console.log(`✅ Found ${analyses.length} agent recommendation analyses`)
-    
-    // Merge all prompt content from all analyses
-    const allPromptContent = analyses.flatMap(analysis => analysis.promptsContent || [])
-    console.log(`📊 Total prompt content entries: ${allPromptContent.length}`)
-    
-    // Merge domain mappings from different prompts
-    const mergedDomainContent: MergedDomainContent = {}
-    
-    console.log(`🔄 Merging domain content from ${allPromptContent.length} prompts...`)
-    
-    for (const promptContent of allPromptContent) {
-      for (const [domain, sentences] of Object.entries(promptContent.contentSnippets)) {
-        if (!mergedDomainContent[domain]) {
-          mergedDomainContent[domain] = []
-        }
-        
-        // Add unique sentences only
-        const existingSentences = new Set(mergedDomainContent[domain])
-        for (const sentence of sentences) {
-          if (!existingSentences.has(sentence)) {
-            mergedDomainContent[domain].push(sentence)
-          }
-        }
-      }
-    }
+    console.log(`✅ Found simple web content analysis for: ${analysis.brandName}`)
     
     // Calculate statistics
-    const domains = Object.keys(mergedDomainContent)
-    const totalSentences = Object.values(mergedDomainContent).reduce(
-      (sum, sentences) => sum + sentences.length, 
+    const domains = Object.keys(analysis.websiteContent)
+    const totalSentences = Object.values(analysis.websiteContent).reduce(
+      (sum, domainContent) => sum + domainContent.sentences.length, 
       0
     )
     
-    console.log(`📊 Merged content statistics:`)
-    console.log(`  - Unique domains: ${domains.length}`)
-    console.log(`  - Total unique sentences: ${totalSentences}`)
-    console.log(`  - Sentences per domain:`)
-    
-    domains.forEach(domain => {
-      console.log(`    - ${domain}: ${mergedDomainContent[domain].length} sentences`)
-    })
+    console.log(`📊 Content statistics:`)
+    console.log(`  - Total domains: ${domains.length}`)
+    console.log(`  - Total sentences: ${totalSentences}`)
     
     // Prepare response data
     const responseData = {
-      brandUrl,
-      normalizedBrandUrl,
-      totalAnalyses: analyses.length,
-      totalPromptsProcessed: allPromptContent.length,
-      uniqueDomains: domains.length,
+      brandName: analysis.brandName,
+      brandUrl: analysis.brandUrl,
+      normalizedBrandUrl: analysis.normalizedBrandUrl,
+      sampledTime: analysis.sampledTime,
+      websiteContent: analysis.websiteContent,
+      totalDomains: domains.length,
       totalSentences,
-      domainContent: mergedDomainContent,
       metadata: {
-        agentPlatforms: [...new Set(analyses.map(a => a.agentPlatform))],
-        sampledTime: analyses.map(a => a.sampledTime).sort().reverse()[0], // Most recent
-        totalPrompts: analyses.reduce((sum, a) => sum + (a.totalPrompts || 0), 0),
-        sampledPrompts: analyses.reduce((sum, a) => sum + (a.sampledPrompts || 0), 0)
+        sampledTime: analysis.sampledTime
       }
     }
     
@@ -105,7 +67,7 @@ export async function GET(request: NextRequest) {
     })
 
   } catch (error) {
-    console.error('❌ Error fetching and merging simple web content:', error)
+    console.error('❌ Error fetching simple web content:', error)
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

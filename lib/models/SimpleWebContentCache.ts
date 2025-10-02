@@ -245,7 +245,12 @@ export class SimpleWebContentCache {
    * Get collection statistics
    */
   static async getStats(): Promise<{
-    totalAnalyses: number
+    totalDocuments: number
+    totalDomains: number
+    totalSentences: number
+    averageDomainsPerBrand: number
+    averageSentencesPerBrand: number
+    averageSentencesPerDomain: number
     uniqueBrands: number
     oldestAnalysis: Date | null
     newestAnalysis: Date | null
@@ -253,20 +258,47 @@ export class SimpleWebContentCache {
     try {
       const collection = await this.getCollection()
       
-      const [totalAnalyses, uniqueBrandsAgg, oldestDoc, newestDoc] = await Promise.all([
+      const [totalDocuments, uniqueBrandsAgg, oldestDoc, newestDoc, allDocs] = await Promise.all([
         collection.countDocuments({}),
         collection.aggregate([
           { $group: { _id: '$brandName' } },
           { $count: "uniqueBrands" }
         ]).toArray(),
         collection.findOne({}, { sort: { sampledTime: 1 } }),
-        collection.findOne({}, { sort: { sampledTime: -1 } })
+        collection.findOne({}, { sort: { sampledTime: -1 } }),
+        collection.find({}).toArray()
       ])
 
       const uniqueBrands = uniqueBrandsAgg.length > 0 ? uniqueBrandsAgg[0].uniqueBrands : 0
+      
+      // Calculate domain and sentence statistics
+      let totalDomains = 0
+      let totalSentences = 0
+      
+      for (const doc of allDocs) {
+        if (doc.websiteContent) {
+          const domains = Object.keys(doc.websiteContent)
+          totalDomains += domains.length
+          
+          for (const domainContent of Object.values(doc.websiteContent)) {
+            if (domainContent && typeof domainContent === 'object' && 'sentences' in domainContent) {
+              totalSentences += (domainContent as any).sentences?.length || 0
+            }
+          }
+        }
+      }
+      
+      const averageDomainsPerBrand = totalDocuments > 0 ? totalDomains / totalDocuments : 0
+      const averageSentencesPerBrand = totalDocuments > 0 ? totalSentences / totalDocuments : 0
+      const averageSentencesPerDomain = totalDomains > 0 ? totalSentences / totalDomains : 0
 
       return {
-        totalAnalyses,
+        totalDocuments,
+        totalDomains,
+        totalSentences,
+        averageDomainsPerBrand,
+        averageSentencesPerBrand,
+        averageSentencesPerDomain,
         uniqueBrands,
         oldestAnalysis: oldestDoc?.sampledTime || null,
         newestAnalysis: newestDoc?.sampledTime || null
@@ -274,7 +306,12 @@ export class SimpleWebContentCache {
     } catch (error) {
       console.error('❌ Error getting simple web content analysis stats:', error)
       return {
-        totalAnalyses: 0,
+        totalDocuments: 0,
+        totalDomains: 0,
+        totalSentences: 0,
+        averageDomainsPerBrand: 0,
+        averageSentencesPerBrand: 0,
+        averageSentencesPerDomain: 0,
         uniqueBrands: 0,
         oldestAnalysis: null,
         newestAnalysis: null

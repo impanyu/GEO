@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import { 
   FileText, 
   Search, 
@@ -60,6 +60,24 @@ export default function PolicyReportPage() {
   const [loading, setLoading] = useState(false)
   const [reportData, setReportData] = useState<PolicyReportData | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [markdownError, setMarkdownError] = useState(false)
+
+  // Simple markdown to HTML converter as fallback
+  const convertMarkdownToHtml = (markdown: string) => {
+    return markdown
+      .replace(/^# (.*$)/gm, '<h1 class="text-2xl font-bold text-gray-900 mb-4">$1</h1>')
+      .replace(/^## (.*$)/gm, '<h2 class="text-xl font-semibold text-gray-900 mt-6 mb-3">$1</h2>')
+      .replace(/^### (.*$)/gm, '<h3 class="text-lg font-medium text-gray-900 mt-4 mb-2">$1</h3>')
+      .replace(/^#### (.*$)/gm, '<h4 class="text-base font-medium text-gray-900 mt-3 mb-2">$1</h4>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold text-gray-900">$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em class="italic text-gray-700">$1</em>')
+      .replace(/^- (.*$)/gm, '<li class="text-gray-700 mb-1">$1</li>')
+      .replace(/(<li.*<\/li>)/gs, '<ul class="list-disc list-inside space-y-1 mb-4 text-gray-700 pl-4">$1</ul>')
+      .replace(/^(\d+)\. (.*$)/gm, '<li class="text-gray-700 mb-1">$2</li>')
+      .replace(/\n\n/g, '</p><p class="text-gray-700 mb-3 leading-relaxed">')
+      .replace(/^(?!<[h|u|l])/gm, '<p class="text-gray-700 mb-3 leading-relaxed">')
+      .replace(/$(?![>])/gm, '</p>')
+  }
 
   const generateReport = useCallback(async () => {
     if (!brandUrl.trim()) {
@@ -70,6 +88,7 @@ export default function PolicyReportPage() {
     setLoading(true)
     setError(null)
     setReportData(null)
+    setMarkdownError(false)
 
     try {
       console.log('🔍 Generating policy report for:', brandUrl, 'topic:', topic)
@@ -327,21 +346,77 @@ export default function PolicyReportPage() {
                   </button>
                 </div>
                 
-                <div className="prose prose-sm max-w-none">
-                  <ReactMarkdown
-                    components={{
-                      h1: ({ children }) => <h1 className="text-2xl font-bold text-gray-900 mb-4">{children}</h1>,
-                      h2: ({ children }) => <h2 className="text-xl font-semibold text-gray-900 mt-6 mb-3">{children}</h2>,
-                      h3: ({ children }) => <h3 className="text-lg font-medium text-gray-900 mt-4 mb-2">{children}</h3>,
-                      ul: ({ children }) => <ul className="list-disc list-inside space-y-1 mb-4">{children}</ul>,
-                      ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 mb-4">{children}</ol>,
-                      li: ({ children }) => <li className="text-gray-700">{children}</li>,
-                      p: ({ children }) => <p className="text-gray-700 mb-3">{children}</p>,
-                      strong: ({ children }) => <strong className="font-semibold text-gray-900">{children}</strong>,
-                    }}
-                  >
-                    {reportData.policyReport}
-                  </ReactMarkdown>
+                <div className="max-w-none bg-white text-gray-900">
+                  {reportData.policyReport && reportData.policyReport.trim() ? (
+                    <div>
+                      {/* Debug info - remove in production */}
+                      {process.env.NODE_ENV === 'development' && (
+                        <details className="mb-4 p-2 bg-gray-100 rounded text-xs">
+                          <summary className="cursor-pointer text-gray-600">Debug: Raw Markdown Content</summary>
+                          <pre className="mt-2 whitespace-pre-wrap text-gray-800">
+                            {JSON.stringify(reportData.policyReport.substring(0, 500), null, 2)}
+                          </pre>
+                        </details>
+                      )}
+                      
+                      {!markdownError ? (
+                        <ReactMarkdown
+                          skipHtml={false}
+                          components={{
+                            // Fallback for text nodes that aren't parsed
+                            text: ({ children }) => {
+                              const text = String(children)
+                              // If we detect raw markdown syntax, switch to fallback
+                              if (text.includes('##') || text.includes('**') || text.includes('- **')) {
+                                console.warn('🚨 Raw markdown detected, switching to fallback renderer')
+                                setMarkdownError(true)
+                                return null
+                              }
+                              return <span className="bg-white text-gray-700">{children}</span>
+                            },
+                            h1: ({ children }) => <h1 className="text-2xl font-bold text-gray-900 mb-4 bg-white">{children}</h1>,
+                            h2: ({ children }) => <h2 className="text-xl font-semibold text-gray-900 mt-6 mb-3 bg-white">{children}</h2>,
+                            h3: ({ children }) => <h3 className="text-lg font-medium text-gray-900 mt-4 mb-2 bg-white">{children}</h3>,
+                            h4: ({ children }) => <h4 className="text-base font-medium text-gray-900 mt-3 mb-2 bg-white">{children}</h4>,
+                            ul: ({ children }) => <ul className="list-disc list-inside space-y-1 mb-4 text-gray-700 bg-white pl-4">{children}</ul>,
+                            ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 mb-4 text-gray-700 bg-white pl-4">{children}</ol>,
+                            li: ({ children }) => <li className="text-gray-700 bg-white mb-1">{children}</li>,
+                            p: ({ children }) => <p className="text-gray-700 mb-3 bg-white leading-relaxed">{children}</p>,
+                            strong: ({ children }) => <strong className="font-semibold text-gray-900 bg-white">{children}</strong>,
+                            em: ({ children }) => <em className="italic text-gray-700 bg-white">{children}</em>,
+                            code: ({ children }) => <code className="bg-gray-100 text-gray-800 px-1 py-0.5 rounded text-sm font-mono">{children}</code>,
+                            pre: ({ children }) => <pre className="bg-gray-100 text-gray-800 p-3 rounded-lg overflow-x-auto text-sm font-mono mb-4">{children}</pre>,
+                            blockquote: ({ children }) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 bg-white mb-4">{children}</blockquote>,
+                            hr: () => <hr className="border-gray-300 my-6" />,
+                            table: ({ children }) => <table className="min-w-full divide-y divide-gray-200 mb-4 bg-white">{children}</table>,
+                            thead: ({ children }) => <thead className="bg-gray-50">{children}</thead>,
+                            tbody: ({ children }) => <tbody className="bg-white divide-y divide-gray-200">{children}</tbody>,
+                            tr: ({ children }) => <tr className="bg-white">{children}</tr>,
+                            th: ({ children }) => <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">{children}</th>,
+                            td: ({ children }) => <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 bg-white">{children}</td>,
+                          }}
+                        >
+                          {reportData.policyReport}
+                        </ReactMarkdown>
+                      ) : (
+                        <div className="bg-white">
+                          <div className="mb-4 p-2 bg-yellow-50 border border-yellow-200 rounded text-sm text-yellow-800">
+                            ⚠️ Using fallback markdown renderer due to parsing issues
+                          </div>
+                          <div 
+                            className="bg-white"
+                            dangerouslySetInnerHTML={{ 
+                              __html: convertMarkdownToHtml(reportData.policyReport) 
+                            }} 
+                          />
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-gray-500 italic bg-white p-4 rounded-lg border border-gray-200">
+                      No policy report content available. Please try generating the report again.
+                    </div>
+                  )}
                 </div>
               </div>
             </>

@@ -13,7 +13,10 @@
     "analyze-simple-web-content": "tsx scripts/analyze-simple-web-content.ts",
     "analyze-agent-recommendation": "tsx scripts/analyze-agent-recommendation.ts",
     "analyze-agent-recommendation-simple": "tsx scripts/analyze-agent-recommendation-simple.ts",
-    "measure-visibility-for-web-content": "tsx scripts/measure-visibility-for-web-content.ts"
+    "analyze-agent-recommendation-even-simple": "tsx scripts/analyze-agent-recommendation-even-simple.ts",
+    "measure-visibility-for-web-content": "tsx scripts/measure-visibility-for-web-content.ts",
+    "convert-web-contents-to-simple": "tsx scripts/convert-web-contents-to-simple-web-contents.ts",
+    "generate-training-data": "tsx scripts/generate-prompt-domain-sentences-visibility-training-data.ts"
   },
   "dependencies": {
     "@heroicons/react": "^2.0.18",
