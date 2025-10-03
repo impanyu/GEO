@@ -187,15 +187,17 @@ export async function GET(request: NextRequest) {
     console.log(`✅ Found ${analyses.length} agent recommendation analyses`)
     
     // Merge all prompt content from all analyses
-    // Merge all contentSnippets from all analyses
+    // Merge all contentSnippets from all analyses and all prompts
     let mergedContentSnippets: { [domain: string]: string[] } = {}
     analyses.forEach(analysis => {
-      if (analysis.contentSnippets) {
-        Object.entries(analysis.contentSnippets).forEach(([domain, sentences]) => {
-          if (!mergedContentSnippets[domain]) {
-            mergedContentSnippets[domain] = []
-          }
-          mergedContentSnippets[domain].push(...sentences)
+      if (analysis.promptContentMapping) {
+        Object.values(analysis.promptContentMapping).forEach(contentSnippets => {
+          Object.entries(contentSnippets).forEach(([domain, sentences]) => {
+            if (!mergedContentSnippets[domain]) {
+              mergedContentSnippets[domain] = []
+            }
+            mergedContentSnippets[domain].push(...sentences)
+          })
         })
       }
     })

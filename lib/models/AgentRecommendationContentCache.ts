@@ -31,6 +31,10 @@ export interface ContentSnippets {
   [normalizedDomain: string]: string[] // domain -> list of snippets
 }
 
+export interface PromptContentMapping {
+  [prompt: string]: ContentSnippets // prompt -> (domain -> snippets)
+}
+
 export interface AgentRecommendationContentDocument {
   _id?: string
   brandNames: string[]
@@ -40,7 +44,7 @@ export interface AgentRecommendationContentDocument {
   totalPrompts: number
   sampledPrompts: number
   callsPerPrompt: number
-  contentSnippets: ContentSnippets // Merged content snippets across all prompts
+  promptContentMapping: PromptContentMapping // Mapping from prompt to content snippets
 }
 
 // AgentRecommendationContentCache model class
@@ -67,7 +71,7 @@ export class AgentRecommendationContentCache {
     totalPrompts: number,
     sampledPrompts: number,
     callsPerPrompt: number,
-    contentSnippets: ContentSnippets
+    promptContentMapping: PromptContentMapping
   ): Promise<string | null> {
     try {
       const collection = await this.getCollection()
@@ -81,7 +85,7 @@ export class AgentRecommendationContentCache {
         totalPrompts,
         sampledPrompts,
         callsPerPrompt,
-        contentSnippets
+        promptContentMapping
       }
 
       const result = await collection.insertOne(document)
@@ -191,7 +195,7 @@ export class AgentRecommendationContentCache {
       totalPrompts: number
       sampledPrompts: number
       callsPerPrompt: number
-      contentSnippets: ContentSnippets
+      promptContentMapping: PromptContentMapping
       sampledTime: Date
     }>
   ): Promise<boolean> {

@@ -7,7 +7,8 @@ dotenv.config({ path: '.env.local' })
 import { 
   AgentRecommendationContentCache,
   closeDatabaseConnection,
-  type ContentSnippets
+  type ContentSnippets,
+  type PromptContentMapping
 } from '../lib/models/AgentRecommendationContentCache'
 import { QueryResponseCache, type QueryResponse, closeDatabaseConnection as closeQueryResponseConnection } from '../lib/models/QueryResponseCache'
 import { normalizeUrl } from '../lib/models/PromptCache'
@@ -560,7 +561,7 @@ async function analyzeAgentRecommendationsFromFile(
     console.log(`📝 Loaded ${allPrompts.length} prompts from file`)
     
     // Step 2: Query agent platform and extract content for each prompt
-    const mergedContentSnippets: ContentSnippets = {}
+    const promptContentMapping: PromptContentMapping = {}
     let documentId: string | null = null
     
     // Try to find existing document for incremental updates
@@ -573,9 +574,9 @@ async function analyzeAgentRecommendationsFromFile(
       
       if (existingDoc) {
         documentId = existingDoc._id?.toString() || null
-        // Load existing contentSnippets to merge with new ones
-        if (existingDoc.contentSnippets) {
-          Object.assign(mergedContentSnippets, existingDoc.contentSnippets)
+        // Load existing promptContentMapping to merge with new ones
+        if (existingDoc.promptContentMapping) {
+          Object.assign(promptContentMapping, existingDoc.promptContentMapping)
         }
         console.log(`📄 Found existing document, will update incrementally: ${documentId}`)
       } else {
@@ -651,21 +652,8 @@ async function analyzeAgentRecommendationsFromFile(
           console.log(`    ⚠️ Error storing query responses: ${queryError instanceof Error ? queryError.message : 'Unknown error'}`)
         }
         
-        // Merge combined content snippets from all queries into the accumulated results
-        for (const [domain, sentences] of Object.entries(combinedContentSnippets)) {
-          if (!mergedContentSnippets[domain]) {
-            mergedContentSnippets[domain] = []
-          }
-          
-          // Add unique sentences only
-          const existingSentences = new Set(mergedContentSnippets[domain])
-          for (const sentence of sentences) {
-            if (!existingSentences.has(sentence)) {
-              mergedContentSnippets[domain].push(sentence)
-              existingSentences.add(sentence)
-            }
-          }
-        }
+        // Store combined content snippets for this specific prompt (no merging across prompts)
+        promptContentMapping[promptText] = combinedContentSnippets
         
         // Log what's being merged for this prompt
         const domainsCount = Object.keys(combinedContentSnippets).length
@@ -688,7 +676,7 @@ async function analyzeAgentRecommendationsFromFile(
               totalPrompts: allPrompts.length,
               sampledPrompts: allPrompts.length, // Using all prompts, no sampling
               callsPerPrompt: queriesPerPrompt,
-              contentSnippets: mergedContentSnippets,
+              promptContentMapping: promptContentMapping,
               sampledTime: new Date()
             })
             console.log(`    💾 Updated MongoDB document after prompt ${i + 1}`)
@@ -701,7 +689,7 @@ async function analyzeAgentRecommendationsFromFile(
               allPrompts.length,
               allPrompts.length, // Using all prompts, no sampling
               queriesPerPrompt, // callsPerPrompt
-              mergedContentSnippets
+              promptContentMapping
             )
             console.log(`    💾 Created new MongoDB document: ${documentId}`)
           }
@@ -727,7 +715,7 @@ async function analyzeAgentRecommendationsFromFile(
               totalPrompts: allPrompts.length,
               sampledPrompts: allPrompts.length,
               callsPerPrompt: queriesPerPrompt,
-              contentSnippets: mergedContentSnippets,
+              promptContentMapping: promptContentMapping,
               sampledTime: new Date()
             })
             console.log(`    💾 Updated MongoDB document after error in prompt ${i + 1}`)
@@ -739,7 +727,7 @@ async function analyzeAgentRecommendationsFromFile(
               allPrompts.length,
               allPrompts.length,
               queriesPerPrompt,
-              mergedContentSnippets
+              promptContentMapping
             )
             console.log(`    💾 Created new MongoDB document after error: ${documentId}`)
           }
@@ -753,18 +741,27 @@ async function analyzeAgentRecommendationsFromFile(
     console.log(`\n✅ All prompts processed and stored incrementally!`)
     console.log(`📊 Final summary:`)
     console.log(`  📝 Total prompts processed: ${allPrompts.length}`)
+    console.log(`  📝 Prompts with content: ${Object.keys(promptContentMapping).length}`)
     
-    const totalDomainsAcrossAllPrompts = Object.keys(mergedContentSnippets).length
-    const totalSentencesAcrossAllPrompts = Object.values(mergedContentSnippets).flat().length
+    // Calculate aggregate statistics across all prompts
+    const allDomains = new Set<string>()
+    let totalSentencesAcrossAllPrompts = 0
     
-    console.log(`  🌐 Unique domains in merged content: ${totalDomainsAcrossAllPrompts}`)
-    console.log(`  📄 Total sentences in merged content: ${totalSentencesAcrossAllPrompts}`)
+    for (const [prompt, contentSnippets] of Object.entries(promptContentMapping)) {
+      Object.keys(contentSnippets).forEach(domain => allDomains.add(domain))
+      totalSentencesAcrossAllPrompts += Object.values(contentSnippets).flat().length
+    }
     
-    // Log domain breakdown
-    if (totalDomainsAcrossAllPrompts > 0) {
-      console.log(`  📋 Domain breakdown:`)
-      for (const [domain, sentences] of Object.entries(mergedContentSnippets)) {
-        console.log(`    - ${domain}: ${sentences.length} sentences`)
+    console.log(`  🌐 Unique domains across all prompts: ${allDomains.size}`)
+    console.log(`  📄 Total sentences across all prompts: ${totalSentencesAcrossAllPrompts}`)
+    
+    // Log per-prompt breakdown
+    if (Object.keys(promptContentMapping).length > 0) {
+      console.log(`  📋 Per-prompt breakdown:`)
+      for (const [prompt, contentSnippets] of Object.entries(promptContentMapping)) {
+        const domains = Object.keys(contentSnippets).length
+        const sentences = Object.values(contentSnippets).flat().length
+        console.log(`    - "${prompt.substring(0, 50)}...": ${domains} domains, ${sentences} sentences`)
       }
     }
     
@@ -776,7 +773,8 @@ async function analyzeAgentRecommendationsFromFile(
       console.log(`  🏢 Brands: ${brandNames.join(', ')}`)
       console.log(`  🤖 Platform: ${agentPlatform}`)
       console.log(`  📝 Prompts processed: ${allPrompts.length}`)
-      console.log(`  🌐 Unique domains: ${totalDomainsAcrossAllPrompts}`)
+      console.log(`  📝 Prompts with content: ${Object.keys(promptContentMapping).length}`)
+      console.log(`  🌐 Unique domains: ${allDomains.size}`)
       console.log(`  📄 Total sentences: ${totalSentencesAcrossAllPrompts}`)
     } else {
       console.error(`❌ Failed to store analysis results`)

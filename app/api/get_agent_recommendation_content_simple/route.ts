@@ -127,30 +127,69 @@ export async function GET(request: NextRequest) {
     console.log(`✅ Found ${analyses.length} agent recommendation analyses`)
     
     // Merge all prompt content from all analyses
-    // Merge all contentSnippets from all analyses
+    // Merge all contentSnippets from all analyses and all prompts
     let mergedContentSnippets: { [domain: string]: string[] } = {}
     analyses.forEach(analysis => {
-      if (analysis.contentSnippets) {
-        Object.entries(analysis.contentSnippets).forEach(([domain, sentences]) => {
-          if (!mergedContentSnippets[domain]) {
-            mergedContentSnippets[domain] = []
-          }
-          // Add unique sentences only
-          const existingSentences = new Set(mergedContentSnippets[domain])
-          for (const sentence of sentences) {
-            if (!existingSentences.has(sentence)) {
-              mergedContentSnippets[domain].push(sentence)
-              existingSentences.add(sentence)
+      if (analysis.promptContentMapping) {
+        Object.values(analysis.promptContentMapping).forEach(contentSnippets => {
+          Object.entries(contentSnippets).forEach(([domain, sentences]) => {
+            if (!mergedContentSnippets[domain]) {
+              mergedContentSnippets[domain] = []
             }
-          }
+            // Add unique sentences only
+            const existingSentences = new Set(mergedContentSnippets[domain])
+            for (const sentence of sentences) {
+              if (!existingSentences.has(sentence)) {
+                mergedContentSnippets[domain].push(sentence)
+                existingSentences.add(sentence)
+              }
+            }
+          })
         })
       }
     })
     
-    // Note: Topic filtering is no longer supported since we store merged content
-    // instead of individual prompts. The merged content already contains all relevant sentences.
+    // Topic filtering is now supported again with prompt-based structure
     if (topic && topic.toLowerCase() !== 'all') {
-      console.log(`⚠️ Topic filtering "${topic}" is not supported with merged content structure`)
+      console.log(`🎯 Filtering prompts by topic: "${topic}"`)
+      
+      // Get all prompts from all analyses
+      const allPrompts: string[] = []
+      analyses.forEach(analysis => {
+        if (analysis.promptContentMapping) {
+          allPrompts.push(...Object.keys(analysis.promptContentMapping))
+        }
+      })
+      
+      if (allPrompts.length > 0) {
+        // Filter prompts by topic using OpenRouter GPT-4o
+        const relevantPrompts = await filterPromptsByTopic(allPrompts, topic)
+        console.log(`🎯 Filtered to ${relevantPrompts.length} relevant prompts`)
+        
+        // Re-merge content snippets only from relevant prompts
+        mergedContentSnippets = {}
+        analyses.forEach(analysis => {
+          if (analysis.promptContentMapping) {
+            Object.entries(analysis.promptContentMapping).forEach(([prompt, contentSnippets]) => {
+              if (relevantPrompts.includes(prompt)) {
+                Object.entries(contentSnippets).forEach(([domain, sentences]) => {
+                  if (!mergedContentSnippets[domain]) {
+                    mergedContentSnippets[domain] = []
+                  }
+                  // Add unique sentences only
+                  const existingSentences = new Set(mergedContentSnippets[domain])
+                  for (const sentence of sentences) {
+                    if (!existingSentences.has(sentence)) {
+                      mergedContentSnippets[domain].push(sentence)
+                      existingSentences.add(sentence)
+                    }
+                  }
+                })
+              }
+            })
+          }
+        })
+      }
     }
     
     console.log(`📊 Merged content from ${analyses.length} analyses:`)

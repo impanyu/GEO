@@ -216,8 +216,15 @@ async function calculateAgentRecommendationVisibility(
 
   console.log(`📊 Processing agent recommendation visibility for prompt: "${prompt.substring(0, 50)}..."`)
 
-  if (!agentDoc.contentSnippets) {
-    console.log(`⚠️ No content snippets in agent document`)
+  if (!agentDoc.promptContentMapping) {
+    console.log(`⚠️ No prompt content mapping in agent document`)
+    return results
+  }
+
+  // Get content snippets for this specific prompt
+  const contentSnippets = agentDoc.promptContentMapping[prompt]
+  if (!contentSnippets) {
+    console.log(`⚠️ No content snippets found for this prompt`)
     return results
   }
 
@@ -232,13 +239,14 @@ async function calculateAgentRecommendationVisibility(
     return results
   }
 
-  // For each domain in agent content snippets
-  for (const [domain, sentences] of Object.entries(agentDoc.contentSnippets)) {
+  // For each domain in content snippets for this prompt
+  for (const [domain, sentences] of Object.entries(contentSnippets)) {
     // Count how many times this normalized domain appears in annotation URLs
     let domainAppearanceCount = 0
     
     for (const annotation of allAnnotations) {
       if (annotation.url && annotation.url.includes(domain)) {
+        console.log(`    🌐 Annotation URL: ${annotation.url} - Domain: ${domain}`)
         domainAppearanceCount++
       }
     }
