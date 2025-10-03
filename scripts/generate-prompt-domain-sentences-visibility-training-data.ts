@@ -318,47 +318,18 @@ async function calculateSimpleWebContentVisibility(
       
       console.log(`  🌐 Domain: ${domain} - ${sentences.length} sentences`)
       
-      // Count how many times the brand name appears in combined annotation context
-      let brandMentionCount = 0
+      // Count how many times this domain appears in annotation URLs
+      let domainAppearanceCount = 0
       
-      for (let responseIndex = 0; responseIndex < queryResponseDoc.responses.length; responseIndex++) {
-        const response = queryResponseDoc.responses[responseIndex]
-        const outputText = response.output_text || ''
-        const annotations = response.annotations || []
-        
-        for (const annotation of annotations) {
-          // Combine annotation URL, title, and text snippet from output_text
-          let combinedContext = ''
-          
-          // Add URL if available
-          if (annotation.url) {
-            combinedContext += annotation.url + ' '
-          }
-          
-          // Add title if available
-          if (annotation.title) {
-            combinedContext += annotation.title + ' '
-          }
-          
-          // Add text snippet from output_text using annotation location
-          if (annotation.location && annotation.location.start !== undefined && annotation.location.end !== undefined) {
-            const start = Math.max(0, annotation.location.start)
-            const end = Math.min(outputText.length, annotation.location.end)
-            if (start < end) {
-              const textSnippet = outputText.substring(start, end)
-              combinedContext += textSnippet
-            }
-          }
-          
-          // Check if brand name appears in the combined context
-          if (combinedContext && sentenceContainsBrand(combinedContext, brandName)) {
-            brandMentionCount++
-          }
+      for (const annotation of allAnnotations) {
+        if (annotation.url && annotation.url.includes(domain)) {
+          console.log(`    🌐 Annotation URL: ${annotation.url} - Domain: ${domain}`)
+          domainAppearanceCount++
         }
       }
       
-      // Calculate visibility: brand mentions in annotation titles / total annotations
-      const visibility = brandMentionCount / totalAnnotationsCount
+      // Calculate visibility: domain appearances / total annotations
+      const visibility = domainAppearanceCount / totalAnnotationsCount
       
       // Compute embedding for this tuple
       const embedding = await createFeatureVector(prompt, domain, sentences)
@@ -371,7 +342,7 @@ async function calculateSimpleWebContentVisibility(
         embedding
       })
       
-      console.log(`    📝 Brand mentions in titles: ${brandMentionCount}/${totalAnnotationsCount} - visibility: ${(visibility * 100).toFixed(2)}%`)
+      console.log(`    🌐 Domain appearances in URLs: ${domainAppearanceCount}/${totalAnnotationsCount} - visibility: ${(visibility * 100).toFixed(2)}%`)
     }
   }
 
