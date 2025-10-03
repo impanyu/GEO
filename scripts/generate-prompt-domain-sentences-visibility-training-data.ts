@@ -245,8 +245,9 @@ async function calculateAgentRecommendationVisibility(
     let domainAppearanceCount = 0
     
     for (const annotation of allAnnotations) {
+      console.log(`    🌐 Annotation URL: ${annotation.url} - Domain: ${domain}`)
       if (annotation.url && annotation.url.includes(domain)) {
-        console.log(`    🌐 Annotation URL: ${annotation.url} - Domain: ${domain}`)
+       
         domainAppearanceCount++
       }
     }
@@ -322,8 +323,8 @@ async function calculateSimpleWebContentVisibility(
       let domainAppearanceCount = 0
       
       for (const annotation of allAnnotations) {
+        console.log(`    🌐 Annotation URL: ${annotation.url} - Domain: ${domain}`)
         if (annotation.url && annotation.url.includes(domain)) {
-          console.log(`    🌐 Annotation URL: ${annotation.url} - Domain: ${domain}`)
           domainAppearanceCount++
         }
       }
