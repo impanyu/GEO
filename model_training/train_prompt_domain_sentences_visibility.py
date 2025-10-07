@@ -139,8 +139,11 @@ class VisibilityTrainer:
                 # Convert embedding to numpy array
                 feature_vector = np.array(embedding, dtype=np.float32)
                 
+                # Convert visibility to binary: > 0 becomes 1, == 0 stays 0
+                binary_label = 1 if visibility > 0 else 0
+                
                 embeddings.append(feature_vector)
-                labels.append(visibility)
+                labels.append(binary_label)
                 
             except Exception as e:
                 print(f"Error processing document {i}: {e}")
