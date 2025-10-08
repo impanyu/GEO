@@ -71,7 +71,7 @@ function extractDomainFromUrl(url: string): string {
 /**
  * Scrape page content using Firecrawl library
  */
-async function scrapePageWithFirecrawl(url: string, title: string): Promise<string> {
+async function scrapePageWithFirecrawl(url: string, title: string): Promise<{ summary: string; markdown: string }> {
   try {
     if (!process.env.FIRECRAWL_API_KEY) {
       throw new Error('FIRECRAWL_API_KEY not configured')
@@ -87,43 +87,47 @@ async function scrapePageWithFirecrawl(url: string, title: string): Promise<stri
         {
           type: 'json',
           prompt: `Extract a comprehensive summary of the page content, focusing on information related to "${title}".`
+        },
+        {
+          type: 'markdown'
         }
       ]
     })
     
     // The library returns the document directly, not wrapped in success/data
     if (result) {
-      // Try to get summary from multiple possible sources
+      // Extract summary and markdown separately
       let summary = ''
+      let markdown = ''
       
-       if (result.json && typeof result.json === 'string') {
+      // Extract summary from JSON
+      if (result.json && typeof result.json === 'string') {
         summary = result.json
-        console.log(`      ✅ Scraped successfully using JSON format (${summary.length} chars)`)
+        console.log(`      ✅ Got JSON summary (${result.json.length} chars)`)
       }
       // If JSON is an object, try to extract text content
       else if (result.json && typeof result.json === 'object') {
         summary = (result.json as any).summary || JSON.stringify(result.json)
-        console.log(`      ✅ Scraped successfully using JSON object (${summary.length} chars)`)
-      }
-      // Fallback to markdown if available
-      else if (result.markdown) {
-        summary = result.markdown
-        console.log(`      ✅ Scraped successfully using markdown format (${summary.length} chars)`)
+        console.log(`      ✅ Got JSON object summary (${summary.length} chars)`)
       }
       
-      if (summary) {
-        return summary
-      } else {
-        console.log(`      ⚠️ No summary content found in response`)
-        return ''
+      // Extract markdown content
+      if (result.markdown) {
+        markdown = result.markdown
+        console.log(`      ✅ Got markdown content (${result.markdown.length} chars)`)
       }
+      
+      // Return summary and markdown as separate variables
+      console.log(`      ✅ Scraped content - Summary: ${summary.length} chars, Markdown: ${markdown.length} chars`)
+      return { summary, markdown }
+      
     } else {
       console.log(`      ⚠️ No data extracted from response`)
-      return ''
+      return { summary: '', markdown: '' }
     }
   } catch (error) {
     console.error(`      ❌ Error scraping ${url}:`, error)
-    return ''
+    return { summary: '', markdown: '' }
   }
 }
 
@@ -137,21 +141,28 @@ async function extractRelevantSentences(content: string, title: string): Promise
     }
 
     const prompt = `
-Extract relevant sentences from the following webpage content that are related to "${title}".
+Extract meaningful snippets from the following MARKDOWN content".
 
-INSTRUCTIONS:
-1. Extract sentences that contain information related to the title "${title}"
-2. Extract complete, meaningful sentences (not fragments)
-3. Skip generic sentences, navigation text, or irrelevant content
-4. Each sentence should be standalone and informative
-5. Remove duplicate or very similar sentences
-6. Return sentences as a JSON array of strings
-7. Limit to maximum 10 most relevant sentences
+CRITICAL INSTRUCTIONS:
+1. SKIP ALL LINKS: Ignore markdown links like [text](url), just focus on the actual text content
+2. Extract STANDALONE SNIPPETS: Each snippet should be self-contained and fully understandable without context from other snippets
+3. PRESERVE ORIGINAL WORDS: Keep the exact wording and phrasing from the source, don't paraphrase or rewrite
+4. INFORMATIVE CONTENT: Each snippet should provide meaningful information"
+5. COMPLETE THOUGHTS: Extract complete sentences or coherent paragraphs, not fragments
+6. SKIP NAVIGATION: Ignore headers, menus, footers, "Click here", "Learn more", etc.
+7. NO DUPLICATES: Remove very similar or duplicate content
+8. CONTEXT INDEPENDENCE: Each snippet should make sense on its own - add context if needed while preserving original words
+9. DO NOT USE PRONOUNS (They, Them, Their, They, That, It, etc.) OR OTHER WORDS THAT WOULD REQUIRE CONTEXT TO UNDERSTAND, when encounter a pronoun, use the word it represents
 
-WEBPAGE CONTENT TO ANALYZE:
+EXAMPLE OF GOOD SNIPPETS:
+- "Slack provides real-time messaging, file sharing, and video calls for team collaboration."
+- "Slack supports integration with over 2,000 third-party applications including Google Drive, Trello, and GitHub."
+- "Slack offers both free and paid plans, with the paid plans starting at $7.25 per user per month."
+
+MARKDOWN CONTENT TO ANALYZE:
 ${content}
 
-Return only a JSON array of strings, no other text.
+Extract 10-20 of the most relevant and informative snippets. Return as a JSON array of strings.
 `
 
     const response = await getOpenRouter().chat.completions.create({
@@ -169,13 +180,17 @@ Return only a JSON array of strings, no other text.
       const parsed = JSON.parse(cleanedResponse)
       
       if (Array.isArray(parsed)) {
-        const sentences = parsed
-          .filter(sentence => typeof sentence === 'string' && sentence.length > 0)
-          .map(sentence => sentence.trim())
-          .filter(sentence => sentence.length > 10) // Filter out very short sentences
+        const snippets = parsed
+          .filter(snippet => typeof snippet === 'string' && snippet.length > 0)
+          .map(snippet => snippet.trim())
+          .filter(snippet => snippet.length > 20) // Filter out very short snippets
+          .filter(snippet => !snippet.toLowerCase().includes('click here')) // Remove navigation text
+          .filter(snippet => !snippet.toLowerCase().includes('learn more')) // Remove call-to-action text
+          .filter(snippet => !snippet.toLowerCase().includes('read more')) // Remove more navigation text
+          .slice(0, 15) // Limit to 15 snippets max
         
-        console.log(`      📊 Extracted ${sentences.length} relevant sentences`)
-        return sentences
+        console.log(`      📊 Extracted ${snippets.length} meaningful snippets from markdown`)
+        return snippets
       } else {
         console.log(`      ⚠️ GPT response is not an array`)
         return []
@@ -186,7 +201,7 @@ Return only a JSON array of strings, no other text.
     }
 
   } catch (error) {
-    console.error('      ⚠️ Error extracting sentences with GPT:', error)
+    console.error('      ⚠️ Error extracting snippets from markdown:', error)
     return []
   }
 }
@@ -249,7 +264,7 @@ function loadPromptsFromFile(filePath: string): string[] {
 /**
  * Query agent platform for a prompt using native OpenAI API with web search
  */
-async function queryAgentPlatform(prompt: string, agentPlatform: string, retries: number = 3): Promise<any> {
+async function queryAgentPlatform(prompt: string, agentPlatform: string, retries: number = 2): Promise<any> {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       if (attempt > 1) {
@@ -475,12 +490,15 @@ async function extractDomainsAndSentences(
           processedUrls.add(annotation.url)
           
           // Scrape the URL to get content
-          const scrapedContent = await scrapePageWithFirecrawl(annotation.url, annotation.title)
+          const scrapedResult = await scrapePageWithFirecrawl(annotation.url, annotation.title)
           
-          if (scrapedContent && scrapedContent.length > 0) {
+          // Use only markdown content for sentence extraction
+          const markdownContent = scrapedResult.markdown
+          
+          if (markdownContent && markdownContent.length > 0) {
             // Extract relevant sentences using OpenRouter GPT-4o
             const relevantSentences = await extractRelevantSentences(
-              scrapedContent, 
+              markdownContent, 
               annotation.title
             )
             

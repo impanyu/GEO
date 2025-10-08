@@ -4,9 +4,11 @@ export interface PromptDomainSentencesVisibilityTrainingDataDocument {
   _id?: string
   prompt: string
   domain: string
-  sentences: string[]
+  sentence: string  // Single sentence instead of array
+  promptEmbedding: number[]  // Separate embedding for prompt
+  domainEmbedding: number[]  // Separate embedding for domain
+  sentenceEmbedding: number[]  // Separate embedding for sentence
   visibility: number
-  embedding: number[]  // Pre-computed concatenated embedding vector
   createdAt: Date
   updatedAt: Date
 }
@@ -54,18 +56,22 @@ class PromptDomainSentencesVisibilityTrainingDataCacheClass {
   async create(
     prompt: string,
     domain: string,
-    sentences: string[],
-    visibility: number,
-    embedding: number[]
+    sentence: string,
+    promptEmbedding: number[],
+    domainEmbedding: number[],
+    sentenceEmbedding: number[],
+    visibility: number
   ): Promise<string> {
     const collection = await this.getCollection()
     
     const document: PromptDomainSentencesVisibilityTrainingDataDocument = {
       prompt,
       domain,
-      sentences,
+      sentence,
+      promptEmbedding,
+      domainEmbedding,
+      sentenceEmbedding,
       visibility,
-      embedding,
       createdAt: new Date(),
       updatedAt: new Date()
     }
@@ -81,9 +87,11 @@ class PromptDomainSentencesVisibilityTrainingDataCacheClass {
     entries: Array<{
       prompt: string
       domain: string
-      sentences: string[]
+      sentence: string
+      promptEmbedding: number[]
+      domainEmbedding: number[]
+      sentenceEmbedding: number[]
       visibility: number
-      embedding: number[]
     }>
   ): Promise<string[]> {
     if (entries.length === 0) {
@@ -95,9 +103,11 @@ class PromptDomainSentencesVisibilityTrainingDataCacheClass {
     const documents: PromptDomainSentencesVisibilityTrainingDataDocument[] = entries.map(entry => ({
       prompt: entry.prompt,
       domain: entry.domain,
-      sentences: entry.sentences,
+      sentence: entry.sentence,
+      promptEmbedding: entry.promptEmbedding,
+      domainEmbedding: entry.domainEmbedding,
+      sentenceEmbedding: entry.sentenceEmbedding,
       visibility: entry.visibility,
-      embedding: entry.embedding,
       createdAt: new Date(),
       updatedAt: new Date()
     }))
@@ -152,9 +162,11 @@ class PromptDomainSentencesVisibilityTrainingDataCacheClass {
     updates: Partial<{
       prompt: string
       domain: string
-      sentences: string[]
+      sentence: string
+      promptEmbedding: number[]
+      domainEmbedding: number[]
+      sentenceEmbedding: number[]
       visibility: number
-      embedding: number[]
     }>
   ): Promise<boolean> {
     const collection = await this.getCollection()
@@ -216,8 +228,8 @@ class PromptDomainSentencesVisibilityTrainingDataCacheClass {
         { $group: { _id: null, avgVisibility: { $avg: '$visibility' } } }
       ]).toArray().then(result => result[0]?.avgVisibility || 0),
       collection.aggregate([
-        { $group: { _id: null, avgSentences: { $avg: { $size: '$sentences' } } } }
-      ]).toArray().then(result => result[0]?.avgSentences || 0)
+        { $group: { _id: null, avgSentenceLength: { $avg: { $strLenCP: '$sentence' } } } }
+      ]).toArray().then(result => result[0]?.avgSentenceLength || 0)
     ])
 
     return {

@@ -151,45 +151,41 @@ async function getEmbedding(text: string): Promise<number[]> {
   }
 }
 
-/**
- * Process sentences into embeddings with padding
- */
-async function processSentencesEmbeddings(sentences: string[], maxSentences: number = 20): Promise<number[]> {
-  // Take first 20 sentences or pad with empty strings
-  const processedSentences = sentences.slice(0, maxSentences)
-  while (processedSentences.length < maxSentences) {
-    processedSentences.push("")
-  }
-  
-  // Get embeddings for each sentence
-  const sentenceEmbeddings: number[][] = []
-  for (const sentence of processedSentences) {
-    const embedding = await getEmbedding(sentence)
-    sentenceEmbeddings.push(embedding)
-  }
-  
-  // Concatenate all sentence embeddings
-  return sentenceEmbeddings.flat()
-}
+
 
 /**
- * Create feature vector from prompt, domain, and sentences
+ * Check if output text contains information mentioned in sentence using GPT-4o
  */
-async function createFeatureVector(prompt: string, domain: string, sentences: string[]): Promise<number[]> {
-  console.log(`    🔢 Computing embeddings for: prompt="${prompt.substring(0, 50)}...", domain="${domain}", sentences_count=${sentences.length}`)
-  
-  // Get individual embeddings
-  const [promptEmbedding, domainEmbedding, sentencesEmbedding] = await Promise.all([
-    getEmbedding(prompt),
-    getEmbedding(domain),
-    processSentencesEmbeddings(sentences)
-  ])
-  
-  // Concatenate all embeddings
-  const featureVector = [...promptEmbedding, ...domainEmbedding, ...sentencesEmbedding]
-  
-  console.log(`    ✅ Feature vector computed: ${featureVector.length} dimensions`)
-  return featureVector
+async function checkSentenceInOutputText(outputText: string, sentence: string): Promise<boolean> {
+  try {
+    const prompt = `
+Does the following OUTPUT TEXT contain the information mentioned in the SENTENCE?
+
+SENTENCE: "${sentence}"
+
+OUTPUT TEXT: "${outputText}"
+
+Answer with only "YES" or "NO".
+`
+
+    const openRouter = new OpenAI({
+      apiKey: process.env.OPENROUTER_API_KEY,
+      baseURL: 'https://openrouter.ai/api/v1'
+    })
+
+    const response = await openRouter.chat.completions.create({
+      model: 'openai/gpt-4o',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 10
+    })
+
+    const answer = response.choices[0].message.content?.trim().toLowerCase()
+    return answer === 'yes'
+  } catch (error) {
+    console.error(`    ❌ Error checking sentence in output text:`, error)
+    return false
+  }
 }
 
 /**
@@ -202,16 +198,20 @@ async function calculateAgentRecommendationVisibility(
 ): Promise<Array<{
   prompt: string
   domain: string
-  sentences: string[]
+  sentence: string
+  promptEmbedding: number[]
+  domainEmbedding: number[]
+  sentenceEmbedding: number[]
   visibility: number
-  embedding: number[]
 }>> {
   const results: Array<{
     prompt: string
     domain: string
-    sentences: string[]
+    sentence: string
+    promptEmbedding: number[]
+    domainEmbedding: number[]
+    sentenceEmbedding: number[]
     visibility: number
-    embedding: number[]
   }> = []
 
   console.log(`📊 Processing agent recommendation visibility for prompt: "${prompt.substring(0, 50)}..."`)
@@ -228,45 +228,58 @@ async function calculateAgentRecommendationVisibility(
     return results
   }
 
-  // Merge all annotations from all responses for this prompt
-  const allAnnotations = queryResponseDoc.responses.flatMap(response => response.annotations || [])
-  const totalAnnotationsCount = allAnnotations.length
+  const totalResponses = queryResponseDoc.responses.length
+  console.log(`  📎 Total responses: ${totalResponses}`)
   
-  console.log(`  📎 Total annotations from all responses: ${totalAnnotationsCount}`)
-  
-  if (totalAnnotationsCount === 0) {
-    console.log(`    ⚠️ No annotations found, skipping prompt`)
+  if (totalResponses === 0) {
+    console.log(`    ⚠️ No responses found, skipping prompt`)
     return results
   }
 
+  // Get embeddings for prompt and domain once
+  const promptEmbedding = await getEmbedding(prompt)
+
   // For each domain in content snippets for this prompt
   for (const [domain, sentences] of Object.entries(contentSnippets)) {
-    // Count how many times this normalized domain appears in annotation URLs
-    let domainAppearanceCount = 0
+    console.log(`  🌐 Processing domain: ${domain} with ${sentences.length} sentences`)
     
-    for (const annotation of allAnnotations) {
-      console.log(`    🌐 Annotation URL: ${annotation.url} - Domain: ${domain}`)
-      if (annotation.url && annotation.url.includes(domain)) {
-       
-        domainAppearanceCount++
+    const domainEmbedding = await getEmbedding(domain)
+    
+    // For each sentence in this domain
+    for (const sentence of sentences) {
+      console.log(`    📝 Processing sentence: "${sentence.substring(0, 50)}..."`)
+      
+      let matchCount = 0
+      
+      // For each response, check if output_text contains the sentence information
+      for (const response of queryResponseDoc.responses) {
+        const outputText = response.output_text || ''
+        if (outputText.trim()) {
+          const containsInfo = await checkSentenceInOutputText(outputText, sentence)
+          if (containsInfo) {
+            matchCount++
+          }
+        }
       }
+      
+      // Calculate visibility: matches / total responses
+      const visibility = totalResponses > 0 ? matchCount / totalResponses : 0
+      
+      // Get sentence embedding
+      const sentenceEmbedding = await getEmbedding(sentence)
+      
+      results.push({
+        prompt,
+        domain,
+        sentence,
+        promptEmbedding,
+        domainEmbedding,
+        sentenceEmbedding,
+        visibility
+      })
+      
+      console.log(`    📊 Sentence visibility: ${matchCount}/${totalResponses} = ${(visibility * 100).toFixed(2)}%`)
     }
-    
-    // Calculate visibility: domain appearances / total annotations
-    const visibility = domainAppearanceCount / totalAnnotationsCount
-    
-    // Compute embedding for this tuple
-    const embedding = await createFeatureVector(prompt, domain, sentences)
-    
-    results.push({
-      prompt,
-      domain,
-      sentences,
-      visibility,
-      embedding
-    })
-    
-    console.log(`    🌐 Domain: ${domain} - ${domainAppearanceCount}/${totalAnnotationsCount} appearances - visibility: ${(visibility * 100).toFixed(2)}%`)
   }
 
   console.log(`✅ Generated ${results.length} training entries from agent recommendation content`)
@@ -435,11 +448,11 @@ async function generateTrainingData(promptsFilePath: string): Promise<void> {
         const agentEntries = await calculateAgentRecommendationVisibility(prompt, agentDoc, queryDoc)
         
         // Step 5.3: Calculate simple web content visibility
-        console.log(`  🔄 Step 5.3: Calculating simple web content visibility...`)
-        const simpleWebEntries = await calculateSimpleWebContentVisibility(prompt, simpleWebDocs, queryDoc)
+        //console.log(`  🔄 Step 5.3: Calculating simple web content visibility...`)
+        //const simpleWebEntries = await calculateSimpleWebContentVisibility(prompt, simpleWebDocs, queryDoc)
         
         // Step 5.4: Store training data for this prompt
-        const allEntriesForPrompt = [...agentEntries, ...simpleWebEntries]
+        const allEntriesForPrompt = [...agentEntries]
         
         if (allEntriesForPrompt.length > 0) {
           console.log(`  💾 Storing ${allEntriesForPrompt.length} training entries for this prompt...`)

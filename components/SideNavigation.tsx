@@ -111,6 +111,12 @@ const geoSubNavItems = [
     description: 'Brand visibility policy analysis'
   },
   {
+    name: 'Visibility Estimation',
+    href: '/geo/visibility-estimation',
+    icon: Target,
+    description: 'Estimate and optimize content visibility'
+  },
+  {
     name: 'GEO Result',
     href: '/optimize',
     icon: BarChart3,
