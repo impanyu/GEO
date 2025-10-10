@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useCallback } from 'react'
-import { Search, Zap, Globe, MessageSquare, Target, Sparkles } from 'lucide-react'
+import { Search, Zap, Globe, MessageSquare, Target, Sparkles, ChevronDown, ChevronRight } from 'lucide-react'
 import SideNavigation from '../../../components/SideNavigation'
 import { useNavigation } from '@/contexts/NavigationContext'
 
@@ -80,6 +80,8 @@ export default function VisibilityEstimationPage() {
   const [optimizationResult, setOptimizationResult] = useState<OptimizationResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [optimizing, setOptimizing] = useState(false)
+  const [neighborsExpanded, setNeighborsExpanded] = useState(false)
+  const [candidatesExpanded, setCandidatesExpanded] = useState(false)
 
   // Load available prompts on component mount
   useEffect(() => {
@@ -371,43 +373,61 @@ export default function VisibilityEstimationPage() {
                   </div>
                 </div>
 
-                <h3 className="text-lg font-medium text-gray-900 mb-3">
-                  Top 10 Nearest Neighbors
-                </h3>
-                <div className="space-y-3">
-                  {visibilityResult.nearestNeighbors.map((neighbor, index) => (
-                    <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
-                        <div>
-                          <span className="font-medium text-gray-700">Prompt:</span>
-                          <p className="text-gray-600 mt-1">
-                            {neighbor.prompt.length > 50 ? `${neighbor.prompt.substring(0, 50)}...` : neighbor.prompt}
-                          </p>
-                        </div>
-                        <div>
-                          <span className="font-medium text-gray-700">Domain:</span>
-                          <p className="text-gray-600 mt-1">{neighbor.domain}</p>
-                        </div>
-                        <div>
-                          <span className="font-medium text-gray-700">Sentence:</span>
-                          <p className="text-gray-600 mt-1">
-                            {neighbor.sentence.length > 50 ? `${neighbor.sentence.substring(0, 50)}...` : neighbor.sentence}
-                          </p>
-                        </div>
-                        <div className="flex justify-between">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-lg font-medium text-gray-900">
+                    Top 10 Nearest Neighbors
+                  </h3>
+                  <button
+                    onClick={() => setNeighborsExpanded(!neighborsExpanded)}
+                    className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 transition-colors"
+                  >
+                    <span className="text-sm font-medium">
+                      {neighborsExpanded ? 'Collapse' : 'Expand'}
+                    </span>
+                    {neighborsExpanded ? (
+                      <ChevronDown className="h-4 w-4" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+                
+                {neighborsExpanded && (
+                  <div className="space-y-3">
+                    {visibilityResult.nearestNeighbors.map((neighbor, index) => (
+                      <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
                           <div>
-                            <span className="font-medium text-gray-700">Visibility:</span>
-                            <p className="text-gray-600 mt-1">{(neighbor.visibility * 100).toFixed(1)}%</p>
+                            <span className="font-medium text-gray-700">Prompt:</span>
+                            <p className="text-gray-600 mt-1">
+                              {neighbor.prompt.length > 50 ? `${neighbor.prompt.substring(0, 50)}...` : neighbor.prompt}
+                            </p>
                           </div>
                           <div>
-                            <span className="font-medium text-gray-700">Similarity:</span>
-                            <p className="text-gray-600 mt-1">{(neighbor.similarity * 100).toFixed(1)}%</p>
+                            <span className="font-medium text-gray-700">Domain:</span>
+                            <p className="text-gray-600 mt-1">{neighbor.domain}</p>
+                          </div>
+                          <div>
+                            <span className="font-medium text-gray-700">Sentence:</span>
+                            <p className="text-gray-600 mt-1">
+                              {neighbor.sentence.length > 50 ? `${neighbor.sentence.substring(0, 50)}...` : neighbor.sentence}
+                            </p>
+                          </div>
+                          <div className="flex justify-between">
+                            <div>
+                              <span className="font-medium text-gray-700">Visibility:</span>
+                              <p className="text-gray-600 mt-1">{(neighbor.visibility * 100).toFixed(1)}%</p>
+                            </div>
+                            <div>
+                              <span className="font-medium text-gray-700">Similarity:</span>
+                              <p className="text-gray-600 mt-1">{(neighbor.similarity * 100).toFixed(1)}%</p>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -456,23 +476,41 @@ export default function VisibilityEstimationPage() {
                   </p>
                 </div>
 
-                <h3 className="text-lg font-medium text-gray-900 mb-3">
-                  All Candidates Tested
-                </h3>
-                <div className="space-y-3">
-                  {optimizationResult.candidates.map((candidate, index) => (
-                    <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                      <div className="flex justify-between items-start">
-                        <p className="text-gray-800 flex-1 mr-4">
-                          {candidate.sentence}
-                        </p>
-                        <span className="text-sm font-medium text-gray-600 whitespace-nowrap">
-                          {(candidate.score * 100).toFixed(1)}%
-                        </span>
-                      </div>
-                    </div>
-                  ))}
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-lg font-medium text-gray-900">
+                    All Candidates Tested
+                  </h3>
+                  <button
+                    onClick={() => setCandidatesExpanded(!candidatesExpanded)}
+                    className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 transition-colors"
+                  >
+                    <span className="text-sm font-medium">
+                      {candidatesExpanded ? 'Collapse' : 'Expand'}
+                    </span>
+                    {candidatesExpanded ? (
+                      <ChevronDown className="h-4 w-4" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4" />
+                    )}
+                  </button>
                 </div>
+                
+                {candidatesExpanded && (
+                  <div className="space-y-3">
+                    {optimizationResult.candidates.map((candidate, index) => (
+                      <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                        <div className="flex justify-between items-start">
+                          <p className="text-gray-800 flex-1 mr-4">
+                            {candidate.sentence}
+                          </p>
+                          <span className="text-sm font-medium text-gray-600 whitespace-nowrap">
+                            {(candidate.score * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

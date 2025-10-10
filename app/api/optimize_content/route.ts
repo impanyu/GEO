@@ -72,18 +72,55 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 /**
+ * Calculate domain similarity based on common domain components from right to left
+ */
+function calculateDomainSimilarity(domain1: string, domain2: string): number {
+  const components1 = domain1.toLowerCase().split('.')
+  const components2 = domain2.toLowerCase().split('.')
+  
+  // Start from the rightmost components and count consecutive matches
+  let commonComponents = 0
+  const minLength = Math.min(components1.length, components2.length)
+  
+  for (let i = 1; i <= minLength; i++) {
+    const comp1 = components1[components1.length - i]
+    const comp2 = components2[components2.length - i]
+    
+    if (comp1 === comp2) {
+      commonComponents++
+    } else {
+      break // Stop at first mismatch
+    }
+  }
+  
+  // Calculate similarity as common components / max components
+  const maxComponents = Math.max(components1.length, components2.length)
+  const similarity = maxComponents > 0 ? commonComponents / maxComponents : 0
+  
+  return similarity
+}
+
+/**
  * Calculate distance between two (prompt, domain, sentence) combinations
+ * with improved similarity thresholding and domain component matching
  */
 function calculateDistance(
-  promptEmb1: number[], domainEmb1: number[], sentenceEmb1: number[],
-  promptEmb2: number[], domainEmb2: number[], sentenceEmb2: number[]
+  promptEmb1: number[], domain1: string, sentenceEmb1: number[],
+  promptEmb2: number[], domain2: string, sentenceEmb2: number[]
 ): number {
   const promptSim = cosineSimilarity(promptEmb1, promptEmb2)
-  const domainSim = cosineSimilarity(domainEmb1, domainEmb2)
+  const domainSim = calculateDomainSimilarity(domain1, domain2)
   const sentenceSim = cosineSimilarity(sentenceEmb1, sentenceEmb2)
   
+  // Apply similarity thresholding - below threshold becomes 0
+  const threshold = 0.1
+  const thresholdedPromptSim = promptSim > threshold ? promptSim : 0
+  const thresholdedDomainSim = domainSim > threshold ? domainSim : 0
+  const thresholdedSentenceSim = sentenceSim > threshold ? sentenceSim : 0
+  
   // Distance = 1 - similarity, then weighted sum
-  const distance = 0.3 * (1 - promptSim) + 0.2 * (1 - domainSim) + 0.5 * (1 - sentenceSim)
+  // Increased sentence weight to 0.6, reduced others
+  const distance = 0.3 * (1 - thresholdedPromptSim) + 0.2 * (1 - thresholdedDomainSim) + 0.5 * (1 - thresholdedSentenceSim)
   
   return distance
 }
@@ -110,17 +147,16 @@ async function calculateVisibilityScore(
   }
   
   // Get embeddings for the input
-  const [promptEmbedding, domainEmbedding, sentenceEmbedding] = await Promise.all([
+  const [promptEmbedding, sentenceEmbedding] = await Promise.all([
     getEmbedding(prompt),
-    getEmbedding(domain),
     getEmbedding(sentence)
   ])
   
   // Calculate distances and similarities for all training examples
   const neighbors = trainingData.map(data => {
     const distance = calculateDistance(
-      promptEmbedding, domainEmbedding, sentenceEmbedding,
-      data.promptEmbedding, data.domainEmbedding, data.sentenceEmbedding
+      promptEmbedding, domain, sentenceEmbedding,
+      data.promptEmbedding, data.domain, data.sentenceEmbedding
     )
     
     // Convert distance back to similarity for weighting
@@ -138,17 +174,23 @@ async function calculateVisibilityScore(
   neighbors.sort((a, b) => a.distance - b.distance)
   const top10Neighbors = neighbors.slice(0, 10)
   
-  // Calculate weighted visibility score
+  // Calculate weighted visibility score with non-linear weighting
   let totalWeightedVisibility = 0
   let totalWeight = 0
   
   for (const neighbor of top10Neighbors) {
-    const weight = neighbor.similarity
+    // Exponential weighting: e^(k * similarity) - 1 where k controls steepness
+    // Using k = 3 for good discrimination
+    // When similarity = 1.0, weight ≈ 1.0 (e^3 - 1) / (e^3 - 1) = 1.0
+    // When similarity = 0.5, weight ≈ 0.22 (much lower)
+    // When similarity = 0.0, weight = 0.0
+    const k = 10
+    const weight = (Math.exp(k * neighbor.similarity) - 1) / (Math.exp(k) - 1)
     totalWeightedVisibility += neighbor.visibility * weight
     totalWeight += weight
   }
   
-  const score = totalWeight > 0 ? totalWeightedVisibility / totalWeight : 0
+  const score =Math.min(1,totalWeightedVisibility) ;// totalWeight > 0 ? totalWeightedVisibility / totalWeight : 0
   
   return { score, neighbors: top10Neighbors }
 }
@@ -157,11 +199,25 @@ async function calculateVisibilityScore(
  * Extract brand name from URL (reused from analyze-simple-web-content.ts)
  */
 function extractBrandName(brandUrl: string): string {
+  console.log(`🏷️ Extracting brand name from: "${brandUrl}"`)
+  
   try {
-    if (!brandUrl) return 'the brand'
+    if (!brandUrl || brandUrl.trim() === '') {
+      console.log('⚠️ Empty brand URL provided, using fallback')
+      return 'UnknownBrand'
+    }
     
-    const domain = new URL(brandUrl).hostname.replace('www.', '')
+    // Add protocol if missing
+    let urlToProcess = brandUrl
+    if (!brandUrl.startsWith('http://') && !brandUrl.startsWith('https://')) {
+      urlToProcess = 'https://' + brandUrl
+    }
+    
+    const domain = new URL(urlToProcess).hostname.replace('www.', '')
+    console.log(`🌐 Extracted domain: "${domain}"`)
+    
     const parts = domain.split('.')
+    console.log(`📝 Domain parts: [${parts.join(', ')}]`)
     
     // Special extensions that are often part of the brand name
     const brandExtensions = ['.ai', '.chat', '.io', '.dev', '.tech', '.app', '.co']
@@ -170,13 +226,23 @@ function extractBrandName(brandUrl: string): string {
     const lastTwoParts = parts.slice(-2).join('.')
     if (parts.length >= 2 && brandExtensions.some(ext => domain.endsWith(ext.substring(1)))) {
       // Include the extension in the brand name (e.g., "rocket.chat" -> "Rocket.chat")
-      return lastTwoParts.charAt(0).toUpperCase() + lastTwoParts.slice(1)
+      const brandName = lastTwoParts.charAt(0).toUpperCase() + lastTwoParts.slice(1)
+      console.log(`✅ Brand name with extension: "${brandName}"`)
+      return brandName
     }
     
     // Default: return just the main domain part (before .com, .org, etc.)
-    return parts[0].charAt(0).toUpperCase() + parts[0].slice(1)
-  } catch {
-    return 'the brand'
+    if (parts.length > 0 && parts[0]) {
+      const brandName = parts[0].charAt(0).toUpperCase() + parts[0].slice(1)
+      console.log(`✅ Brand name (main part): "${brandName}"`)
+      return brandName
+    }
+    
+    console.log('⚠️ Could not extract brand name from parts, using fallback')
+    return 'UnknownBrand'
+  } catch (error) {
+    console.log(`❌ Error extracting brand name: ${error}`)
+    return 'UnknownBrand'
   }
 }
 
@@ -186,39 +252,50 @@ function extractBrandName(brandUrl: string): string {
 async function generateOptimizedSentences(
   currentSentence: string,
   brandName: string,
+  prompt: string,
   higherVisibilitySentences: string[]
 ): Promise<string[]> {
   try {
-    let prompt = ''
+    let gptPrompt = ''
     
     if (!currentSentence || currentSentence.trim() === '') {
       // Handle empty sentence case
       if (higherVisibilitySentences.length === 0) {
-        prompt = `
-Generate 5 different sentences about "${brandName}" that would be suitable for online content.
+        gptPrompt = `
+Generate 5 different sentences about "${brandName}" that would be suitable for online content and relevant to this context:
+
+CONTEXT PROMPT: "${prompt}"
 
 Requirements:
-- Each sentence must mention "${brandName}" by name
-- Make them informative and engaging
-- Vary the style and approach
+- Each sentence MUST mention "${brandName}" by its exact name (not "the brand" or any generic term)
+- Make them informative and engaging about "${brandName}"
+- Ensure the sentences are relevant to the context prompt above
+- Vary the style and approach while staying relevant to the prompt
 - Keep them concise but meaningful
-- Focus on different aspects (features, benefits, use cases, etc.)
+- Focus on aspects of "${brandName}" that relate to the context prompt
+
+CRITICAL: Always use "${brandName}" explicitly in each sentence, never use "the brand" or other generic references.
 
 Return only a JSON array of 5 strings, no other text.
 `
       } else {
-        prompt = `
-Generate 5 different sentences about "${brandName}" by mimicking the style and approach of these high-visibility examples:
+        gptPrompt = `
+Generate 5 different sentences about "${brandName}" by mimicking the style and approach of these high-visibility examples, while being relevant to the context:
+
+CONTEXT PROMPT: "${prompt}"
 
 HIGH-VISIBILITY EXAMPLES:
 ${higherVisibilitySentences.map((s, i) => `${i + 1}. ${s}`).join('\n')}
 
 Requirements:
-- Each sentence must mention "${brandName}" by name
+- Each sentence MUST mention "${brandName}" by its exact name (not "the brand" or any generic term)
 - Mimic the style, keywords, and structure of the examples above
 - Make them informative and engaging about "${brandName}"
-- Keep similar length and tone to the examples
-- Focus on similar topics/aspects as the examples
+- Ensure the sentences are relevant to the context prompt
+- Keep similar length and tone to the examples while addressing the prompt context
+- Focus on aspects of "${brandName}" that relate to both the examples and the context prompt
+
+CRITICAL: Always use "${brandName}" explicitly in each sentence, never use "the brand" or other generic references.
 
 Return only a JSON array of 5 strings, no other text.
 `
@@ -226,23 +303,30 @@ Return only a JSON array of 5 strings, no other text.
     } else {
       // Handle existing sentence case
       if (higherVisibilitySentences.length === 0) {
-        prompt = `
-Modify the following sentence about "${brandName}" to create 5 improved versions:
+        gptPrompt = `
+Modify the following sentence about "${brandName}" to create 5 improved versions that are relevant to the context:
+
+CONTEXT PROMPT: "${prompt}"
 
 CURRENT SENTENCE: "${currentSentence}"
 
 Requirements:
-- Each version must mention "${brandName}" by name
+- Each version MUST mention "${brandName}" by its exact name (not "the brand" or any generic term)
 - Improve clarity, engagement, and informativeness
-- Vary the wording and structure
-- Keep the core meaning but make it more compelling
+- Ensure the improved sentences are relevant to the context prompt
+- Vary the wording and structure while maintaining relevance to the prompt
+- Keep the core meaning but make it more compelling and contextually relevant
 - Maintain similar length
+
+CRITICAL: Always use "${brandName}" explicitly in each sentence, never use "the brand" or other generic references.
 
 Return only a JSON array of 5 strings, no other text.
 `
       } else {
-        prompt = `
-Modify the following sentence about "${brandName}" by incorporating the style and approach of these high-visibility examples:
+        gptPrompt = `
+Modify the following sentence about "${brandName}" by incorporating the style and approach of these high-visibility examples, while being relevant to the context:
+
+CONTEXT PROMPT: "${prompt}"
 
 CURRENT SENTENCE: "${currentSentence}"
 
@@ -250,11 +334,14 @@ HIGH-VISIBILITY EXAMPLES:
 ${higherVisibilitySentences.map((s, i) => `${i + 1}. ${s}`).join('\n')}
 
 Requirements:
-- Each modified version must mention "${brandName}" by name
+- Each modified version MUST mention "${brandName}" by its exact name (not "the brand" or any generic term)
 - Mimic the style, keywords, and structure of the high-visibility examples
 - Keep the core meaning of the current sentence but adapt the style
-- Make them more similar to the successful examples above
+- Ensure the modified sentences are relevant to the context prompt
+- Make them more similar to the successful examples above while addressing the prompt context
 - Maintain appropriate length
+
+CRITICAL: Always use "${brandName}" explicitly in each sentence, never use "the brand" or other generic references.
 
 Return only a JSON array of 5 strings, no other text.
 `
@@ -263,7 +350,7 @@ Return only a JSON array of 5 strings, no other text.
 
     const response = await getOpenRouter().chat.completions.create({
       model: 'openai/gpt-4o',
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content: gptPrompt }],
       temperature: 0.7,
       max_tokens: 500
     })
@@ -277,10 +364,22 @@ Return only a JSON array of 5 strings, no other text.
       const parsed = JSON.parse(cleanedResponse)
       
       if (Array.isArray(parsed)) {
-        return parsed
+        const sentences = parsed
           .filter(sentence => typeof sentence === 'string' && sentence.length > 0)
           .map(sentence => sentence.trim())
           .slice(0, 5) // Ensure we have at most 5 sentences
+        
+        // Validate that each sentence contains the brand name
+        const validatedSentences = sentences.filter(sentence => {
+          const containsBrandName = sentence.toLowerCase().includes(brandName.toLowerCase())
+          if (!containsBrandName) {
+            console.log(`⚠️ Filtered out sentence without brand name: "${sentence}"`)
+          }
+          return containsBrandName
+        })
+        
+        console.log(`📝 Generated ${validatedSentences.length} valid sentences with brand name`)
+        return validatedSentences
       } else {
         console.log('⚠️ GPT response is not an array')
         return []
@@ -353,6 +452,7 @@ export async function POST(request: NextRequest) {
     const candidateSentences = await generateOptimizedSentences(
       sentence || '',
       brandName,
+      prompt,
       higherVisibilitySentences
     )
     

@@ -61,18 +61,55 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 /**
+ * Calculate domain similarity based on common domain components from right to left
+ */
+function calculateDomainSimilarity(domain1: string, domain2: string): number {
+  const components1 = domain1.toLowerCase().split('.')
+  const components2 = domain2.toLowerCase().split('.')
+  
+  // Start from the rightmost components and count consecutive matches
+  let commonComponents = 0
+  const minLength = Math.min(components1.length, components2.length)
+  
+  for (let i = 1; i <= minLength; i++) {
+    const comp1 = components1[components1.length - i]
+    const comp2 = components2[components2.length - i]
+    
+    if (comp1 === comp2) {
+      commonComponents++
+    } else {
+      break // Stop at first mismatch
+    }
+  }
+  
+  // Calculate similarity as common components / max components
+  const maxComponents = Math.max(components1.length, components2.length)
+  const similarity = maxComponents > 0 ? commonComponents / maxComponents : 0
+  
+  return similarity
+}
+
+/**
  * Calculate distance between two (prompt, domain, sentence) combinations
+ * with improved similarity thresholding and domain component matching
  */
 function calculateDistance(
-  promptEmb1: number[], domainEmb1: number[], sentenceEmb1: number[],
-  promptEmb2: number[], domainEmb2: number[], sentenceEmb2: number[]
+  promptEmb1: number[], domain1: string, sentenceEmb1: number[],
+  promptEmb2: number[], domain2: string, sentenceEmb2: number[]
 ): number {
   const promptSim = cosineSimilarity(promptEmb1, promptEmb2)
-  const domainSim = cosineSimilarity(domainEmb1, domainEmb2)
+  const domainSim = calculateDomainSimilarity(domain1, domain2)
   const sentenceSim = cosineSimilarity(sentenceEmb1, sentenceEmb2)
   
+  // Apply similarity thresholding - below threshold becomes 0
+  const threshold = 0.1
+  const thresholdedPromptSim = promptSim > threshold ? promptSim : 0
+  const thresholdedDomainSim = domainSim > threshold ? domainSim : 0
+  const thresholdedSentenceSim = sentenceSim > threshold ? sentenceSim : 0
+  
   // Distance = 1 - similarity, then weighted sum
-  const distance = 0.3 * (1 - promptSim) + 0.2 * (1 - domainSim) + 0.5 * (1 - sentenceSim)
+  // Increased sentence weight to 0.6, reduced others
+  const distance = 0.3 * (1 - thresholdedPromptSim) + 0.2 * (1 - thresholdedDomainSim) + 0.5 * (1 - thresholdedSentenceSim)
   
   return distance
 }
@@ -106,11 +143,12 @@ export async function POST(request: NextRequest) {
       })
     }
     
+
+    
     // Get embeddings for the input
     console.log('🔢 Computing embeddings for input...')
-    const [promptEmbedding, domainEmbedding, sentenceEmbedding] = await Promise.all([
+    const [promptEmbedding, sentenceEmbedding] = await Promise.all([
       getEmbedding(prompt),
-      getEmbedding(domain),
       getEmbedding(sentence)
     ])
     
@@ -132,8 +170,8 @@ export async function POST(request: NextRequest) {
     // Calculate distances and similarities for all training examples
     const neighbors = trainingData.map(data => {
       const distance = calculateDistance(
-        promptEmbedding, domainEmbedding, sentenceEmbedding,
-        data.promptEmbedding, data.domainEmbedding, data.sentenceEmbedding
+        promptEmbedding, domain, sentenceEmbedding,
+        data.promptEmbedding, data.domain, data.sentenceEmbedding
       )
       
       // Convert distance back to similarity for weighting
@@ -155,17 +193,23 @@ export async function POST(request: NextRequest) {
     
     console.log(`🎯 Top 10 nearest neighbors found`)
     
-    // Calculate weighted visibility score
+    // Calculate weighted visibility score with non-linear weighting
     let totalWeightedVisibility = 0
     let totalWeight = 0
     
     for (const neighbor of top10Neighbors) {
-      const weight = neighbor.similarity
+      // Exponential weighting: e^(k * similarity) - 1 where k controls steepness
+      // Using k = 3 for good discrimination
+      // When similarity = 1.0, weight ≈ 1.0 (e^3 - 1) / (e^3 - 1) = 1.0
+      // When similarity = 0.5, weight ≈ 0.22 (much lower)
+      // When similarity = 0.0, weight = 0.0
+      const k = 10
+      const weight = (Math.exp(k * neighbor.similarity) - 1) / (Math.exp(k) - 1)
       totalWeightedVisibility += neighbor.visibility * weight
       totalWeight += weight
     }
     
-    const visibilityScore = totalWeightedVisibility ;//totalWeight > 0 ? totalWeightedVisibility / totalWeight : 0
+    const visibilityScore = Math.min(1,totalWeightedVisibility) ;//totalWeight > 0 ? totalWeightedVisibility / totalWeight : 0
     
     console.log(`✅ Calculated visibility score: ${(visibilityScore * 100).toFixed(2)}%`)
     
