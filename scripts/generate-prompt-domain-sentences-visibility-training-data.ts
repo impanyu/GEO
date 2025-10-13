@@ -412,7 +412,7 @@ async function generateTrainingData(promptsFilePath: string): Promise<void> {
     
     if (simpleWebDocs.length === 0) {
       console.log(`❌ No simple web content documents found. Exiting.`)
-      return
+      //return
     }
     
     // Step 4: Clear existing training data
