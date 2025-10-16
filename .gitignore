@@ -348,3 +348,8 @@ credentials.json
 # MongoDB backups (may contain sensitive data)
 mongodb_backup/
 mongodb_backup.tar.gz
+
+# Generated visualization files
+model_training/*.png
+model_training/visibility_summary_report.txt
+model_training/venv/

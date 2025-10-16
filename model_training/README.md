@@ -154,6 +154,46 @@ model_training/
 3. **Rewards**: Calculated using GPT-4o + trained reward model
 4. **Training**: GRPO reinforcement learning
 
+## 📊 Data Visualization
+
+### Visibility Analysis Plotting
+
+Use the `plot_visibility_analysis.py` script to generate comprehensive visualizations of your training data:
+
+```bash
+# Run from model_training directory
+python plot_visibility_analysis.py
+
+# Or run from anywhere
+cd model_training && python plot_visibility_analysis.py
+```
+
+**Generated Outputs:**
+1. `visibility_by_prompts.png` - Average visibility by prompt (top 30, sorted)
+2. `visibility_by_sentences.png` - Average visibility by sentence (top 30, sorted)
+3. `visibility_by_domains.png` - Average visibility by domain (top 50, sorted)
+4. `visibility_distribution_prompts.png` - Distribution and cumulative plots for prompts
+5. `visibility_distribution_sentences.png` - Distribution and cumulative plots for sentences
+6. `visibility_distribution_domains.png` - Distribution and cumulative plots for domains
+7. `visibility_summary_report.txt` - Text summary with statistics and top performers
+
+**Features:**
+- Automatically connects to MongoDB using `MONGODB_URI` from `.env.local`
+- Color-coded bars (green = higher visibility, red = lower visibility)
+- Shows sample counts (n=X) for each category
+- Displays statistics (mean, median, percentiles)
+- Truncates long labels for better readability
+- High-resolution output (300 DPI)
+
+**Example Statistics:**
+```
+PROMPTS Statistics:
+Count: 150
+Mean Visibility: 5.23%
+Median Visibility: 4.87%
+Top Prompt: "best communication APIs" (12.45%, n=15)
+```
+
 ## 📈 Monitoring Training
 
 ### Reward Model Metrics
